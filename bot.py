@@ -1,9 +1,7 @@
 import os
-import json
 import time
-from pathlib import Path
-
 import requests
+import psycopg2
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -16,53 +14,133 @@ WEBHOOKS = [
     if url
 ]
 
-CHECK_INTERVAL = int(os.getenv("CHECK_INTERVAL", "60"))
-STATE_FILE = Path("data/coinbase_state.json")
+DATABASE_URL = os.getenv("DATABASE_URL")
 
-COINBASE_PRODUCTS_URL = "https://api.exchange.coinbase.com/products"
+CHECK_INTERVAL = int(
+    os.getenv("CHECK_INTERVAL", "60")
+)
+
+COINBASE_PRODUCTS_URL = (
+    "https://api.exchange.coinbase.com/products"
+)
 
 session = requests.Session()
+
 session.headers.update({
-    "User-Agent": "Ade-Market-Monitor/1.0"
+    "User-Agent": "Ade-Market-Monitor/2.0"
 })
 
 
 def check_config():
     if not WEBHOOKS:
         raise RuntimeError(
-            "Add WEBHOOK and/or WEBHOOK2 to your environment variables."
+            "WEBHOOK or WEBHOOK2 is missing."
+        )
+
+    if not DATABASE_URL:
+        raise RuntimeError(
+            "DATABASE_URL is missing."
         )
 
 
-def send_discord(title, description, fields=None):
+def get_database():
+    return psycopg2.connect(DATABASE_URL)
+
+
+def create_table():
+    with get_database() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS seen_assets (
+                    asset_name TEXT PRIMARY KEY
+                );
+            """)
+
+
+def get_seen_assets():
+    with get_database() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                "SELECT asset_name FROM seen_assets;"
+            )
+
+            rows = cursor.fetchall()
+
+            return {
+                row[0]
+                for row in rows
+            }
+
+
+def save_asset(asset):
+    with get_database() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                INSERT INTO seen_assets (asset_name)
+                VALUES (%s)
+                ON CONFLICT (asset_name)
+                DO NOTHING;
+                """,
+                (asset,)
+            )
+
+
+def save_assets(assets):
+    with get_database() as conn:
+        with conn.cursor() as cursor:
+            for asset in assets:
+                cursor.execute(
+                    """
+                    INSERT INTO seen_assets (asset_name)
+                    VALUES (%s)
+                    ON CONFLICT (asset_name)
+                    DO NOTHING;
+                    """,
+                    (asset,)
+                )
+
+
+def send_discord(
+    title,
+    description,
+    fields=None
+):
     embed = {
         "title": title,
         "description": description,
-        "color": 3447003,
+        "color": 3447003
     }
 
     if fields:
         embed["fields"] = fields
 
-    payload = {"embeds": [embed]}
+    payload = {
+        "embeds": [embed]
+    }
 
     for webhook in WEBHOOKS:
         try:
             response = session.post(
                 webhook,
                 json=payload,
-                timeout=15,
+                timeout=15
             )
+
             response.raise_for_status()
+
         except Exception as exc:
-            print(f"Webhook error: {exc}")
+            print(
+                f"Webhook error: {exc}"
+            )
 
 
-def get_products():
+def get_coinbase_products():
     response = session.get(
         COINBASE_PRODUCTS_URL,
-        timeout=15,
+        timeout=15
     )
+
     response.raise_for_status()
 
     products = response.json()
@@ -70,6 +148,7 @@ def get_products():
     online = {}
 
     for product in products:
+
         if product.get("status") != "online":
             continue
 
@@ -77,144 +156,139 @@ def get_products():
         base = product.get("base_currency")
         quote = product.get("quote_currency")
 
-        if not product_id or not base or not quote:
+        if not product_id:
+            continue
+
+        if not base:
+            continue
+
+        if not quote:
             continue
 
         online[product_id] = {
             "base": base,
-            "quote": quote,
+            "quote": quote
         }
 
     return online
 
 
-def load_state():
-    if not STATE_FILE.exists():
-        return None
-
-    try:
-        with STATE_FILE.open("r", encoding="utf-8") as file:
-            data = json.load(file)
-
-        return {
-            "assets": set(data.get("assets", [])),
-            "products": set(data.get("products", [])),
-        }
-
-    except Exception:
-        return None
-
-
-def save_state(assets, products):
-    STATE_FILE.parent.mkdir(parents=True, exist_ok=True)
-
-    with STATE_FILE.open("w", encoding="utf-8") as file:
-        json.dump(
-            {
-                "assets": sorted(assets),
-                "products": sorted(products),
-            },
-            file,
-            indent=2,
-        )
-
-
 def main():
     check_config()
-    state = load_state()
 
-    print("Coinbase webhook monitor starting...")
+    print(
+        "Starting Coinbase monitor..."
+    )
+
+    create_table()
+
+    seen_assets = get_seen_assets()
 
     while True:
-        try:
-            online = get_products()
 
-            current_products = set(online)
+        try:
+            online = get_coinbase_products()
+
             current_assets = {
                 info["base"]
                 for info in online.values()
             }
 
-            if state is None:
-                state = {
-                    "assets": current_assets,
-                    "products": current_products,
-                }
+            # FIRST RUN
+            #
+            # If the database is empty,
+            # save everything currently on Coinbase.
+            # This prevents hundreds of old alerts.
+            if not seen_assets:
 
-                save_state(
-                    current_assets,
-                    current_products,
+                save_assets(
+                    current_assets
+                )
+
+                seen_assets.update(
+                    current_assets
                 )
 
                 print(
-                    f"Baseline saved: "
-                    f"{len(current_assets)} assets, "
-                    f"{len(current_products)} markets."
+                    f"Baseline saved to PostgreSQL: "
+                    f"{len(current_assets)} assets."
                 )
 
                 send_discord(
                     "✅ Coinbase monitor online",
                     (
-                        f"Baseline created. Monitoring "
-                        f"{len(current_assets)} existing assets "
-                        f"for future additions."
-                    ),
+                        f"Database baseline created.\n\n"
+                        f"Monitoring "
+                        f"**{len(current_assets)}** "
+                        f"existing Coinbase assets "
+                        f"for new listings."
+                    )
                 )
 
             else:
-                new_assets = current_assets - state["assets"]
-                new_products = current_products - state["products"]
 
-                for asset in sorted(new_assets):
+                new_assets = (
+                    current_assets
+                    - seen_assets
+                )
+
+                for asset in sorted(
+                    new_assets
+                ):
+
                     markets = sorted(
                         product_id
-                        for product_id, info in online.items()
+                        for product_id, info
+                        in online.items()
                         if info["base"] == asset
                     )
 
+                    # Save it permanently
+                    # BEFORE the next polling cycle.
+                    save_asset(asset)
+
+                    seen_assets.add(asset)
+
+                    market_text = ", ".join(
+                        f"`{market}`"
+                        for market in markets[:20]
+                    )
+
                     send_discord(
-                        "🚨 New Coinbase asset detected",
+                        "🚨 NEW COINBASE ASSET",
                         (
-                            f"**{asset}** has appeared as an "
-                            f"online Coinbase Exchange asset."
+                            f"**{asset}** has appeared "
+                            f"as an online Coinbase "
+                            f"Exchange asset."
                         ),
                         [
                             {
                                 "name": "Markets",
                                 "value": (
-                                    ", ".join(
-                                        f"`{market}`"
-                                        for market in markets[:20]
-                                    )
+                                    market_text
                                     or "Unknown"
                                 ),
-                                "inline": False,
+                                "inline": False
                             }
-                        ],
+                        ]
                     )
 
                     print(
-                        f"NEW ASSET: {asset} | "
-                        f"{', '.join(markets)}"
+                        f"NEW COINBASE ASSET: "
+                        f"{asset}"
                     )
 
-                for product_id in sorted(new_products):
-                    if online[product_id]["base"] not in new_assets:
-                        print(f"New Coinbase market: {product_id}")
-
-                if new_assets or new_products:
-                    state["assets"].update(current_assets)
-                    state["products"].update(current_products)
-
-                    save_state(
-                        state["assets"],
-                        state["products"],
-                    )
+            time.sleep(
+                CHECK_INTERVAL
+            )
 
         except Exception as exc:
-            print(f"Monitor error: {exc}")
 
-        time.sleep(CHECK_INTERVAL)
+            print(
+                f"Monitor error: {exc}"
+            )
+
+            time.sleep(30)
 
 
 if __name__ == "__main__":
