@@ -1944,8 +1944,186 @@ async def movers(
     await interaction.followup.send(
         embed=embed
     )
+@bot.tree.command(
+    name="ping",
+    description="Check whether Alpha Alerts is online"
+)
+async def ping(
+    interaction: discord.Interaction
+):
+    await interaction.response.send_message(
+        f"🏓 Alpha Alerts online — "
+        f"{round(bot.latency * 1000)} ms"
+    )
+@bot.tree.command(
+    name="topgainers",
+    description="Show the biggest crypto gainers"
+)
+async def topgainers(
+    interaction: discord.Interaction
+):
+    await interaction.response.defer()
 
+    with crypto_prices_lock:
+        current = dict(crypto_prices)
 
+    old = await asyncio.to_thread(
+        get_old_crypto_prices
+    )
+
+    results = []
+
+    for symbol, price in current.items():
+        old_price = old.get(symbol)
+
+        if not old_price:
+            continue
+
+        percent = (
+            (price - old_price)
+            / old_price
+        ) * 100
+
+        results.append(
+            (symbol, price, percent)
+        )
+
+    results.sort(
+        key=lambda item: item[2],
+        reverse=True
+    )
+
+    top = results[:10]
+
+    if not top:
+        await interaction.followup.send(
+            "Still collecting enough price history."
+        )
+        return
+
+    lines = [
+        (
+            f"🟢 **{symbol}** "
+            f"{percent:+.2f}% "
+            f"— ${price:,.6f}"
+        )
+        for symbol, price, percent in top
+    ]
+
+    embed = discord.Embed(
+        title="🚀 Top Crypto Gainers",
+        description="\n".join(lines),
+        color=5763719
+    )
+
+    await interaction.followup.send(
+        embed=embed
+    )
+    @bot.tree.command(
+    name="toplosers",
+    description="Show the biggest crypto losers"
+)
+async def toplosers(
+    interaction: discord.Interaction
+):
+    await interaction.response.defer()
+
+    with crypto_prices_lock:
+        current = dict(crypto_prices)
+
+    old = await asyncio.to_thread(
+        get_old_crypto_prices
+    )
+
+    results = []
+
+    for symbol, price in current.items():
+        old_price = old.get(symbol)
+
+        if not old_price:
+            continue
+
+        percent = (
+            (price - old_price)
+            / old_price
+        ) * 100
+
+        results.append(
+            (symbol, price, percent)
+        )
+
+    results.sort(
+        key=lambda item: item[2]
+    )
+
+    bottom = results[:10]
+
+    if not bottom:
+        await interaction.followup.send(
+            "Still collecting enough price history."
+        )
+        return
+
+    lines = [
+        (
+            f"🔴 **{symbol}** "
+            f"{percent:+.2f}% "
+            f"— ${price:,.6f}"
+        )
+        for symbol, price, percent in bottom
+    ]
+
+    embed = discord.Embed(
+        title="📉 Top Crypto Losers",
+        description="\n".join(lines),
+        color=15548997
+    )
+
+    await interaction.followup.send(
+        embed=embed
+    )
+    @bot.tree.command(
+    name="alerts",
+    description="Show current alert settings"
+)
+async def alerts(
+    interaction: discord.Interaction
+):
+    embed = discord.Embed(
+        title="⚙️ Alert Settings",
+        color=3447003
+    )
+
+    embed.add_field(
+        name="Major Crypto",
+        value=(
+            f"{CRYPTO_MAJOR_SPIKE_PERCENT}% "
+            f"in {CRYPTO_WINDOW_MINUTES}m"
+        ),
+        inline=False
+    )
+
+    embed.add_field(
+        name="Other Crypto",
+        value=(
+            f"{CRYPTO_SMALL_SPIKE_PERCENT}% "
+            f"in {CRYPTO_WINDOW_MINUTES}m"
+        ),
+        inline=False
+    )
+
+    embed.add_field(
+        name="Stocks",
+        value=(
+            f"{STOCK_MOVE_PERCENT}% "
+            f"in {STOCK_WINDOW_MINUTES}m"
+        ),
+        inline=False
+    )
+
+    await interaction.response.send_message(
+        embed=embed
+    )
 # =========================================================
 # START
 # =========================================================
