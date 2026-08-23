@@ -3,3 +3,8 @@ python-dotenv>=1.0,<2
 psycopg2-binary>=2.9,<3
 websocket-client>=1.8,<2
 discord.py>=2.5,<3
+coinbase-advanced-py
+pandas
+numpy
+scikit-learn
+joblib
