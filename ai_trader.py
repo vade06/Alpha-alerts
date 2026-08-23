@@ -1291,6 +1291,73 @@ def run_ai_cycle():
     return result
 
 
+# =========================================================
+# LEARNING / PERFORMANCE STATS
+# =========================================================
+
+def get_learning_stats():
+    """Return paper-trading performance stats for /ailearning."""
+
+    state = load_state()
+    trades = state.get("trades", [])
+
+    resolved = len(trades)
+    wins = int(state.get("wins", 0))
+
+    buy_signals = resolved
+    buy_correct = wins
+    buy_accuracy = (
+        buy_correct / buy_signals
+        if buy_signals > 0
+        else None
+    )
+
+    by_product = {}
+
+    for trade in trades:
+        product = trade.get("product", "Unknown")
+        pnl = float(trade.get("pnl", 0) or 0)
+
+        if product not in by_product:
+            by_product[product] = {
+                "product": product,
+                "resolved": 0,
+                "correct": 0
+            }
+
+        by_product[product]["resolved"] += 1
+
+        if pnl > 0:
+            by_product[product]["correct"] += 1
+
+    products = []
+
+    for item in by_product.values():
+        count = item["resolved"]
+        item["directional_accuracy"] = (
+            item["correct"] / count
+            if count > 0
+            else None
+        )
+        products.append(item)
+
+    products.sort(
+        key=lambda item: item["resolved"],
+        reverse=True
+    )
+
+    return {
+        "resolved_predictions": resolved,
+        "buy_signals": buy_signals,
+        "buy_correct": buy_correct,
+        "buy_accuracy": buy_accuracy,
+        "bearish_signals": 0,
+        "bearish_correct": 0,
+        "bearish_accuracy": None,
+        "products": products
+    }
+
+
 if __name__ == "__main__":
 
     result = run_ai_cycle()
