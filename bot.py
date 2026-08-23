@@ -15,7 +15,7 @@ from discord.ext import commands
 from dotenv import load_dotenv
 from psycopg2.extras import execute_values
 
-from ai_trader import run_ai_cycle
+from ai_trader import run_ai_cycle, get_learning_stats
 
 
 # =========================================================
@@ -2805,7 +2805,7 @@ async def alerts(
 
 
 # =========================================================
-# /AI â OWNER ONLY
+# /AI - OWNER ONLY
 # =========================================================
 
 @bot.tree.command(
@@ -2959,7 +2959,311 @@ async def ai(
         ephemeral=True
     )
 
+# =========================================================
+# /AIRANKINGS — OWNER ONLY
+# =========================================================
 
+@bot.tree.command(
+    name="airankings",
+    description="Rank markets from your private AI trader"
+)
+async def airankings(
+    interaction: discord.Interaction
+):
+
+    if not is_bot_owner(interaction):
+        await reject_non_owner(interaction)
+        return
+
+    with ai_result_lock:
+        result = (
+            dict(ai_last_result)
+            if ai_last_result
+            else None
+        )
+
+    if not result:
+        await interaction.response.send_message(
+            "AI trader is still waiting for its first cycle.",
+            ephemeral=True
+        )
+        return
+
+    rankings = result.get(
+        "market_rankings",
+        []
+    )
+
+    if not rankings:
+        await interaction.response.send_message(
+            "No market rankings are available yet.",
+            ephemeral=True
+        )
+        return
+
+    lines = []
+
+    for index, market in enumerate(
+        rankings,
+        start=1
+    ):
+
+        product = market.get(
+            "product",
+            "Unknown"
+        )
+
+        decision = market.get(
+            "decision",
+            "HOLD"
+        )
+
+        up_probability = (
+            float(
+                market.get(
+                    "probability_up",
+                    0
+                )
+            )
+            * 100
+        )
+
+        price = float(
+            market.get(
+                "price",
+                0
+            )
+        )
+
+        if decision == "BUY":
+            marker_text = "[BUY]"
+        elif decision == "BEARISH":
+            marker_text = "[BEARISH]"
+        else:
+            marker_text = "[HOLD]"
+
+        lines.append(
+            (
+                f"**{index}. {product}** {marker_text}\n"
+                f"Price: `${price:,.6f}` | "
+                f"Upside probability: **{up_probability:.1f}%**"
+            )
+        )
+
+    embed = discord.Embed(
+        title="Alpha AI Market Rankings",
+        description="\n\n".join(
+            lines
+        ),
+        color=3447003
+    )
+
+    best = result.get(
+        "best_opportunity"
+    )
+
+    if best:
+        embed.add_field(
+            name="Highest-Ranked Setup",
+            value=(
+                f"**{best.get('product', 'Unknown')}** | "
+                f"{float(best.get('probability_up', 0)) * 100:.1f}% "
+                f"estimated upside probability"
+            ),
+            inline=False
+        )
+
+    embed.add_field(
+        name="Markets Scanned",
+        value=str(
+            result.get(
+                "markets_scanned",
+                len(rankings)
+            )
+        ),
+        inline=True
+    )
+
+    position = result.get(
+        "position"
+    )
+
+    embed.add_field(
+        name="Paper Position",
+        value=(
+            position.get(
+                "product",
+                "Unknown"
+            )
+            if position
+            else "None"
+        ),
+        inline=True
+    )
+
+    embed.set_footer(
+        text=(
+            "OWNER ONLY | PAPER TRADING | "
+            "Model estimates are not guarantees"
+        )
+    )
+
+    await interaction.response.send_message(
+        embed=embed,
+        ephemeral=True
+    )
+    
+    # =========================================================
+# /AILEARNING — OWNER ONLY
+# =========================================================
+
+@bot.tree.command(
+    name="ailearning",
+    description="Show how your AI is learning from old predictions"
+)
+async def ailearning(
+    interaction: discord.Interaction
+):
+
+    if not is_bot_owner(interaction):
+        await reject_non_owner(interaction)
+        return
+
+    await interaction.response.defer(
+        ephemeral=True
+    )
+
+    try:
+        stats = await asyncio.to_thread(
+            get_learning_stats
+        )
+
+    except Exception as exc:
+
+        print(
+            f"/ailearning error: {exc}"
+        )
+
+        await interaction.followup.send(
+            "Could not load AI learning statistics.",
+            ephemeral=True
+        )
+
+        return
+
+    buy_accuracy = stats.get(
+        "buy_accuracy"
+    )
+
+    bearish_accuracy = stats.get(
+        "bearish_accuracy"
+    )
+
+    embed = discord.Embed(
+        title="Alpha AI Learning",
+        description=(
+            "Predictions are graded after the "
+            "15-minute target window and stored "
+            "for future model training."
+        ),
+        color=3447003
+    )
+
+    embed.add_field(
+        name="Resolved Predictions",
+        value=str(
+            stats.get(
+                "resolved_predictions",
+                0
+            )
+        ),
+        inline=True
+    )
+
+    embed.add_field(
+        name="BUY Signals",
+        value=(
+            f"{stats.get('buy_correct', 0)}/"
+            f"{stats.get('buy_signals', 0)} correct"
+        ),
+        inline=True
+    )
+
+    embed.add_field(
+        name="BUY Accuracy",
+        value=(
+            f"{buy_accuracy * 100:.1f}%"
+            if buy_accuracy is not None
+            else "Not enough data"
+        ),
+        inline=True
+    )
+
+    embed.add_field(
+        name="BEARISH Signals",
+        value=(
+            f"{stats.get('bearish_correct', 0)}/"
+            f"{stats.get('bearish_signals', 0)} correct"
+        ),
+        inline=True
+    )
+
+    embed.add_field(
+        name="BEARISH Accuracy",
+        value=(
+            f"{bearish_accuracy * 100:.1f}%"
+            if bearish_accuracy is not None
+            else "Not enough data"
+        ),
+        inline=True
+    )
+
+    product_lines = []
+
+    for product in stats.get(
+        "products",
+        []
+    ):
+
+        accuracy = product.get(
+            "directional_accuracy"
+        )
+
+        accuracy_text = (
+            f"{accuracy * 100:.1f}%"
+            if accuracy is not None
+            else "N/A"
+        )
+
+        product_lines.append(
+            (
+                f"**{product['product']}** | "
+                f"{product['resolved']} resolved | "
+                f"{accuracy_text}"
+            )
+        )
+
+    if product_lines:
+        embed.add_field(
+            name="By Market",
+            value="\n".join(
+                product_lines
+            ),
+            inline=False
+        )
+
+    embed.set_footer(
+        text=(
+            "OWNER ONLY | Feedback is used "
+            "during model retraining"
+        )
+    )
+
+    await interaction.followup.send(
+        embed=embed,
+        ephemeral=True
+    )
+    
 # =========================================================
 # START
 # =========================================================
