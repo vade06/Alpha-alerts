@@ -194,7 +194,7 @@ def is_bot_owner(interaction: discord.Interaction) -> bool:
 
 async def reject_non_owner(interaction: discord.Interaction):
     await interaction.response.send_message(
-        "⛔ You are not authorised to use the AI trader.",
+        "â You are not authorised to use the AI trader.",
         ephemeral=True
     )
 
@@ -591,7 +591,7 @@ def check_new_coinbase_assets(seen_assets):
         )
 
         send_coinbase_alert(
-            "🚨 COINBASE TRADING LIVE",
+            "ð¨ COINBASE TRADING LIVE",
             (
                 f"**{asset}** has appeared "
                 f"as a new online Coinbase asset."
@@ -919,10 +919,10 @@ def check_all_crypto():
 
         send_crypto_alert(
             (
-                "🚀 CRYPTO PRICE SPIKE"
+                "ð CRYPTO PRICE SPIKE"
                 if positive
                 else
-                "🔻 CRYPTO PRICE SPIKE"
+                "ð» CRYPTO PRICE SPIKE"
             ),
             (
                 f"**{symbol}** is "
@@ -1143,10 +1143,10 @@ def check_stock_symbol(symbol):
 
     send_stock_alert(
         (
-            "📈 STOCK MOVE ALERT"
+            "ð STOCK MOVE ALERT"
             if positive
             else
-            "📉 STOCK MOVE ALERT"
+            "ð STOCK MOVE ALERT"
         ),
         (
             f"**{symbol}** is "
@@ -1441,12 +1441,12 @@ def format_money(value):
 def transaction_name(code):
 
     names = {
-        "P": "🟢 Open-market BUY",
-        "S": "🔴 Open-market SELL",
-        "A": "🔵 Grant / Award",
-        "M": "🟡 Option Exercise",
-        "F": "🟠 Tax / Withholding",
-        "G": "🟣 Gift",
+        "P": "ð¢ Open-market BUY",
+        "S": "ð´ Open-market SELL",
+        "A": "ðµ Grant / Award",
+        "M": "ð¡ Option Exercise",
+        "F": "ð  Tax / Withholding",
+        "G": "ð£ Gift",
         "C": "Conversion",
         "D": "Disposition",
         "J": "Other",
@@ -1701,17 +1701,17 @@ def send_parsed_form4_alert(
 
         if has_purchase:
 
-            title = "🟢 INSIDER BUY"
+            title = "ð¢ INSIDER BUY"
             color = 5763719
 
         elif has_sale:
 
-            title = "🔴 INSIDER SALE"
+            title = "ð´ INSIDER SALE"
             color = 15548997
 
         else:
 
-            title = "🧠 INSIDER FORM 4"
+            title = "ð§  INSIDER FORM 4"
             color = 10181046
 
         send_insider_alert(
@@ -1734,7 +1734,7 @@ def send_parsed_form4_alert(
         )
 
         send_insider_alert(
-            "🧠 NEW INSIDER FILING",
+            "ð§  NEW INSIDER FILING",
             (
                 f"**{company} "
                 f"({ticker})** filed "
@@ -1869,7 +1869,7 @@ def run_ai_trader_cycle():
             f"Confidence "
             f"{result['confidence'] * 100:.1f}% | "
             f"Portfolio "
-            f"£{result['portfolio_value']:.2f}"
+            f"Â£{result['portfolio_value']:.2f}"
         )
 
         if result.get("opened_position"):
@@ -1888,7 +1888,7 @@ def run_ai_trader_cycle():
 
             print(
                 f"AI PAPER CLOSE: "
-                f"PnL £{trade['pnl']:+.2f} "
+                f"PnL Â£{trade['pnl']:+.2f} "
                 f"({trade['reason']})"
             )
 
@@ -2192,7 +2192,7 @@ async def ping(
 
     await interaction.response.send_message(
         (
-            f"🏓 Alpha Alerts online — "
+            f"ð Alpha Alerts online â "
             f"{round(bot.latency * 1000)} ms"
         )
     )
@@ -2217,7 +2217,7 @@ async def status(
         ai_ready = ai_last_result is not None
 
     embed = discord.Embed(
-        title="🟢 Alpha Alerts Status",
+        title="ð¢ Alpha Alerts Status",
         color=5763719
     )
 
@@ -2236,11 +2236,11 @@ async def status(
     embed.add_field(
         name="SEC Insider",
         value=(
-            "🟢 Active"
+            "ð¢ Active"
             if SEC_USER_AGENT
             and PRIVATE_INSIDER_WEBHOOK
             else
-            "🔴 Disabled"
+            "ð´ Disabled"
         ),
         inline=True
     )
@@ -2248,10 +2248,10 @@ async def status(
     embed.add_field(
         name="AI Paper Trader",
         value=(
-            "🟢 Active"
+            "ð¢ Active"
             if ai_ready
             else
-            "🟡 Starting"
+            "ð¡ Starting"
         ),
         inline=True
     )
@@ -2342,7 +2342,7 @@ async def crypto(
         )
 
     embed = discord.Embed(
-        title=f"🪙 {symbol}",
+        title=f"ðª {symbol}",
         description=f"**${price:,.8f}**",
         color=3447003
     )
@@ -2417,7 +2417,7 @@ async def stock(
 
         embed = discord.Embed(
             title=(
-                f"{'📈' if positive else '📉'} "
+                f"{'ð' if positive else 'ð'} "
                 f"{ticker}"
             ),
             description=(
@@ -2493,7 +2493,7 @@ async def watchlist(
     )
 
     embed = discord.Embed(
-        title="📊 Alpha Alerts Watchlist",
+        title="ð Alpha Alerts Watchlist",
         color=3447003
     )
 
@@ -2600,22 +2600,22 @@ async def movers(
     for symbol, price, percent in top:
 
         emoji = (
-            "🟢"
+            "ð¢"
             if percent >= 0
-            else "🔴"
+            else "ð´"
         )
 
         lines.append(
             (
                 f"{emoji} **{symbol}** "
                 f"{percent:+.2f}% "
-                f"— ${price:,.6f}"
+                f"â ${price:,.6f}"
             )
         )
 
     embed = discord.Embed(
         title=(
-            f"🔥 Biggest Crypto Movers "
+            f"ð¥ Biggest Crypto Movers "
             f"(~{CRYPTO_WINDOW_MINUTES}m)"
         ),
         description="\n".join(lines),
@@ -2660,16 +2660,16 @@ async def topgainers(
 
     lines = [
         (
-            f"🟢 **{symbol}** "
+            f"ð¢ **{symbol}** "
             f"{percent:+.2f}% "
-            f"— ${price:,.6f}"
+            f"â ${price:,.6f}"
         )
         for symbol, price, percent
         in top
     ]
 
     embed = discord.Embed(
-        title="🚀 Top Crypto Gainers",
+        title="ð Top Crypto Gainers",
         description="\n".join(lines),
         color=5763719
     )
@@ -2711,16 +2711,16 @@ async def toplosers(
 
     lines = [
         (
-            f"🔴 **{symbol}** "
+            f"ð´ **{symbol}** "
             f"{percent:+.2f}% "
-            f"— ${price:,.6f}"
+            f"â ${price:,.6f}"
         )
         for symbol, price, percent
         in bottom
     ]
 
     embed = discord.Embed(
-        title="📉 Top Crypto Losers",
+        title="ð Top Crypto Losers",
         description="\n".join(lines),
         color=15548997
     )
@@ -2743,7 +2743,7 @@ async def alerts(
 ):
 
     embed = discord.Embed(
-        title="⚙️ Alert Settings",
+        title="âï¸ Alert Settings",
         color=3447003
     )
 
@@ -2805,7 +2805,7 @@ async def alerts(
 
 
 # =========================================================
-# /AI — OWNER ONLY
+# /AI â OWNER ONLY
 # =========================================================
 
 @bot.tree.command(
@@ -2836,7 +2836,7 @@ async def ai(
 
         await interaction.response.send_message(
             (
-                "🧠 AI trader is still "
+                "ð§  AI trader is still "
                 "waiting for its first cycle."
             ),
             ephemeral=True
@@ -2852,16 +2852,16 @@ async def ai(
     )
 
     if decision == "BUY":
-        decision_emoji = "🟢"
+        decision_emoji = "ð¢"
 
     elif decision == "BEARISH":
-        decision_emoji = "🔴"
+        decision_emoji = "ð´"
 
     else:
-        decision_emoji = "🟡"
+        decision_emoji = "ð¡"
 
     embed = discord.Embed(
-        title="🧠 Alpha AI Trader",
+        title="ð§  Alpha AI Trader",
         description=(
             f"**{result['product']}**\n"
             f"${result['price']:,.2f}"
@@ -2887,21 +2887,21 @@ async def ai(
     embed.add_field(
         name="Paper Portfolio",
         value=(
-            f"£{result['portfolio_value']:,.2f}"
+            f"Â£{result['portfolio_value']:,.2f}"
         ),
         inline=True
     )
 
     embed.add_field(
         name="Cash",
-        value=f"£{result['cash']:,.2f}",
+        value=f"Â£{result['cash']:,.2f}",
         inline=True
     )
 
     embed.add_field(
         name="Realised P&L",
         value=(
-            f"£{result['realized_pnl']:+,.2f}"
+            f"Â£{result['realized_pnl']:+,.2f}"
         ),
         inline=True
     )
@@ -2927,12 +2927,12 @@ async def ai(
         ) * 100
 
         embed.add_field(
-            name="📊 Open Paper Trade",
+            name="ð Open Paper Trade",
             value=(
                 f"Entry: **${entry:,.2f}**\n"
                 f"Current: **${current:,.2f}**\n"
                 f"Move: **{unrealized:+.2f}%**\n"
-                f"Size: **£{position['value']:.2f}**\n"
+                f"Size: **Â£{position['value']:.2f}**\n"
                 f"Stop: **${position['stop_loss']:,.2f}**\n"
                 f"Target: **${position['take_profit']:,.2f}**"
             ),
@@ -2949,7 +2949,7 @@ async def ai(
 
     embed.set_footer(
         text=(
-            "OWNER ONLY • PAPER TRADING • "
+            "OWNER ONLY â¢ PAPER TRADING â¢ "
             "No real funds"
         )
     )
