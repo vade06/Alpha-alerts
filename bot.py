@@ -2959,7 +2959,186 @@ async def ai(
         ephemeral=True
     )
 
+# =========================================================
+# /AIRANKINGS — OWNER ONLY
+# =========================================================
 
+@bot.tree.command(
+    name="airankings",
+    description="Rank markets from your private AI trader"
+)
+async def airankings(
+    interaction: discord.Interaction
+):
+
+    if not is_bot_owner(interaction):
+
+        await reject_non_owner(
+            interaction
+        )
+
+        return
+
+    with ai_result_lock:
+
+        result = (
+            dict(ai_last_result)
+            if ai_last_result
+            else None
+        )
+
+    if not result:
+
+        await interaction.response.send_message(
+            "🧠 AI trader is still waiting for its first cycle.",
+            ephemeral=True
+        )
+
+        return
+
+    rankings = result.get(
+        "market_rankings",
+        []
+    )
+
+    if not rankings:
+
+        await interaction.response.send_message(
+            (
+                "The AI is online, but no multi-market rankings "
+                "are available yet. Wait for the next AI cycle."
+            ),
+            ephemeral=True
+        )
+
+        return
+
+    lines = []
+
+    for index, market in enumerate(
+        rankings,
+        start=1
+    ):
+
+        decision = market.get(
+            "decision",
+            "HOLD"
+        )
+
+        if decision == "BUY":
+            emoji = "🟢"
+
+        elif decision == "BEARISH":
+            emoji = "🔴"
+
+        else:
+            emoji = "🟡"
+
+        product = market.get(
+            "product",
+            "Unknown"
+        )
+
+        probability_up = (
+            float(
+                market.get(
+                    "probability_up",
+                    0
+                )
+            )
+            * 100
+        )
+
+        confidence = (
+            float(
+                market.get(
+                    "confidence",
+                    0
+                )
+            )
+            * 100
+        )
+
+        price = float(
+            market.get(
+                "price",
+                0
+            )
+        )
+
+        lines.append(
+            (
+                f"**{index}. {product}** {emoji} {decision}\n"
+                f"Price: `${price:,.6f}` • "
+                f"Upside probability: **{probability_up:.1f}%** • "
+                f"Signal confidence: **{confidence:.1f}%**"
+            )
+        )
+
+    embed = discord.Embed(
+        title="🧠 Alpha AI Market Rankings",
+        description="\n\n".join(
+            lines
+        ),
+        color=3447003
+    )
+
+    best = result.get(
+        "best_opportunity"
+    )
+
+    if best:
+
+        embed.add_field(
+            name="Highest-Ranked Setup",
+            value=(
+                f"**{best.get('product', 'Unknown')}** • "
+                f"{float(best.get('probability_up', 0)) * 100:.1f}% "
+                f"estimated upside probability"
+            ),
+            inline=False
+        )
+
+    embed.add_field(
+        name="Markets Scanned",
+        value=str(
+            result.get(
+                "markets_scanned",
+                len(rankings)
+            )
+        ),
+        inline=True
+    )
+
+    position = result.get(
+        "position"
+    )
+
+    embed.add_field(
+        name="Paper Position",
+        value=(
+            position.get(
+                "product",
+                "Unknown"
+            )
+            if position
+            else "None"
+        ),
+        inline=True
+    )
+
+    embed.set_footer(
+        text=(
+            "OWNER ONLY • PAPER TRADING • "
+            "Ranking is a model estimate, not a guarantee"
+        )
+    )
+
+    await interaction.response.send_message(
+        embed=embed,
+        ephemeral=True
+    )
+    
 # =========================================================
 # START
 # =========================================================
