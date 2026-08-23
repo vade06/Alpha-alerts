@@ -15,6 +15,8 @@ from discord.ext import commands
 from dotenv import load_dotenv
 from psycopg2.extras import execute_values
 
+from ai_trader import run_ai_cycle
+
 
 # =========================================================
 # ENVIRONMENT
@@ -25,33 +27,18 @@ load_dotenv()
 WEBHOOK = os.getenv("WEBHOOK")
 WEBHOOK2 = os.getenv("WEBHOOK2")
 
-PRIVATE_CRYPTO_WEBHOOK = os.getenv(
-    "PRIVATE_CRYPTO_WEBHOOK"
-)
+PRIVATE_CRYPTO_WEBHOOK = os.getenv("PRIVATE_CRYPTO_WEBHOOK")
+PRIVATE_STOCK_WEBHOOK = os.getenv("PRIVATE_STOCK_WEBHOOK")
+PRIVATE_INSIDER_WEBHOOK = os.getenv("PRIVATE_INSIDER_WEBHOOK")
 
-PRIVATE_STOCK_WEBHOOK = os.getenv(
-    "PRIVATE_STOCK_WEBHOOK"
-)
+DATABASE_URL = os.getenv("DATABASE_URL")
+FINNHUB_API_KEY = os.getenv("FINNHUB_API_KEY")
+DISCORD_BOT_TOKEN = os.getenv("DISCORD_BOT_TOKEN")
+SEC_USER_AGENT = os.getenv("SEC_USER_AGENT")
 
-PRIVATE_INSIDER_WEBHOOK = os.getenv(
-    "PRIVATE_INSIDER_WEBHOOK"
-)
-
-DATABASE_URL = os.getenv(
-    "DATABASE_URL"
-)
-
-FINNHUB_API_KEY = os.getenv(
-    "FINNHUB_API_KEY"
-)
-
-DISCORD_BOT_TOKEN = os.getenv(
-    "DISCORD_BOT_TOKEN"
-)
-
-SEC_USER_AGENT = os.getenv(
-    "SEC_USER_AGENT"
-)
+# Your Discord USER ID.
+# Keep this in Railway Variables, not in GitHub.
+OWNER_DISCORD_USER_ID = os.getenv("OWNER_DISCORD_USER_ID")
 
 
 # =========================================================
@@ -59,10 +46,11 @@ SEC_USER_AGENT = os.getenv(
 # =========================================================
 
 CHECK_INTERVAL = int(
-    os.getenv(
-        "CHECK_INTERVAL",
-        "60"
-    )
+    os.getenv("CHECK_INTERVAL", "60")
+)
+
+AI_CHECK_INTERVAL = int(
+    os.getenv("AI_CHECK_INTERVAL", "300")
 )
 
 
@@ -71,31 +59,19 @@ CHECK_INTERVAL = int(
 # =========================================================
 
 CRYPTO_WINDOW_MINUTES = int(
-    os.getenv(
-        "CRYPTO_WINDOW_MINUTES",
-        "15"
-    )
+    os.getenv("CRYPTO_WINDOW_MINUTES", "15")
 )
 
 CRYPTO_MAJOR_SPIKE_PERCENT = float(
-    os.getenv(
-        "CRYPTO_MAJOR_SPIKE_PERCENT",
-        "7"
-    )
+    os.getenv("CRYPTO_MAJOR_SPIKE_PERCENT", "7")
 )
 
 CRYPTO_SMALL_SPIKE_PERCENT = float(
-    os.getenv(
-        "CRYPTO_SMALL_SPIKE_PERCENT",
-        "15"
-    )
+    os.getenv("CRYPTO_SMALL_SPIKE_PERCENT", "15")
 )
 
 CRYPTO_ALERT_COOLDOWN_MINUTES = int(
-    os.getenv(
-        "CRYPTO_ALERT_COOLDOWN_MINUTES",
-        "60"
-    )
+    os.getenv("CRYPTO_ALERT_COOLDOWN_MINUTES", "60")
 )
 
 MAJOR_CRYPTO = {
@@ -130,31 +106,19 @@ STOCK_SYMBOLS = [
 ]
 
 STOCK_MOVE_PERCENT = float(
-    os.getenv(
-        "STOCK_MOVE_PERCENT",
-        "5"
-    )
+    os.getenv("STOCK_MOVE_PERCENT", "5")
 )
 
 STOCK_WINDOW_MINUTES = int(
-    os.getenv(
-        "STOCK_WINDOW_MINUTES",
-        "30"
-    )
+    os.getenv("STOCK_WINDOW_MINUTES", "30")
 )
 
 STOCK_ALERT_COOLDOWN_MINUTES = int(
-    os.getenv(
-        "STOCK_ALERT_COOLDOWN_MINUTES",
-        "60"
-    )
+    os.getenv("STOCK_ALERT_COOLDOWN_MINUTES", "60")
 )
 
 STOCK_CHECK_INTERVAL = int(
-    os.getenv(
-        "STOCK_CHECK_INTERVAL",
-        "300"
-    )
+    os.getenv("STOCK_CHECK_INTERVAL", "300")
 )
 
 
@@ -163,10 +127,7 @@ STOCK_CHECK_INTERVAL = int(
 # =========================================================
 
 SEC_CHECK_INTERVAL = int(
-    os.getenv(
-        "SEC_CHECK_INTERVAL",
-        "300"
-    )
+    os.getenv("SEC_CHECK_INTERVAL", "300")
 )
 
 SEC_TICKERS_URL = (
@@ -200,18 +161,42 @@ FINNHUB_QUOTE_URL = (
 # =========================================================
 
 crypto_prices = {}
-
 crypto_prices_lock = threading.Lock()
 
 coinbase_product_ids = []
 
 monitor_started = False
 
+ai_last_result = None
+ai_result_lock = threading.Lock()
+
 http = requests.Session()
 
 http.headers.update({
-    "User-Agent": "Alpha-Alerts/12.0"
+    "User-Agent": "Alpha-Alerts/13.0"
 })
+
+
+# =========================================================
+# OWNER SECURITY
+# =========================================================
+
+def is_bot_owner(interaction: discord.Interaction) -> bool:
+    """
+    Fail closed:
+    if OWNER_DISCORD_USER_ID is missing, nobody gets owner access.
+    """
+    if not OWNER_DISCORD_USER_ID:
+        return False
+
+    return str(interaction.user.id) == str(OWNER_DISCORD_USER_ID)
+
+
+async def reject_non_owner(interaction: discord.Interaction):
+    await interaction.response.send_message(
+        "⛔ You are not authorised to use the AI trader.",
+        ephemeral=True
+    )
 
 
 # =========================================================
@@ -221,19 +206,19 @@ http.headers.update({
 def check_config():
 
     if not DATABASE_URL:
-        raise RuntimeError(
-            "DATABASE_URL is missing."
-        )
+        raise RuntimeError("DATABASE_URL is missing.")
 
     if not DISCORD_BOT_TOKEN:
-        raise RuntimeError(
-            "DISCORD_BOT_TOKEN is missing."
+        raise RuntimeError("DISCORD_BOT_TOKEN is missing.")
+
+    if not OWNER_DISCORD_USER_ID:
+        print(
+            "WARNING: OWNER_DISCORD_USER_ID missing. "
+            "Owner-only commands will be locked for everyone."
         )
 
     if not WEBHOOK and not WEBHOOK2:
-        print(
-            "WARNING: General Discord webhook missing."
-        )
+        print("WARNING: General Discord webhook missing.")
 
     if not FINNHUB_API_KEY:
         print(
@@ -259,16 +244,12 @@ def check_config():
 # =========================================================
 
 def get_database():
-
-    return psycopg2.connect(
-        DATABASE_URL
-    )
+    return psycopg2.connect(DATABASE_URL)
 
 
 def create_tables():
 
     with get_database() as conn:
-
         with conn.cursor() as cursor:
 
             cursor.execute("""
@@ -377,9 +358,7 @@ def post_to_webhooks(
         if webhook in already_sent:
             continue
 
-        already_sent.add(
-            webhook
-        )
+        already_sent.add(webhook)
 
         try:
 
@@ -393,9 +372,7 @@ def post_to_webhooks(
 
         except Exception as exc:
 
-            print(
-                f"Discord webhook error: {exc}"
-            )
+            print(f"Discord webhook error: {exc}")
 
 
 def send_coinbase_alert(
@@ -406,10 +383,7 @@ def send_coinbase_alert(
 ):
 
     post_to_webhooks(
-        [
-            WEBHOOK,
-            WEBHOOK2
-        ],
+        [WEBHOOK, WEBHOOK2],
         title,
         description,
         fields,
@@ -425,10 +399,7 @@ def send_crypto_alert(
 ):
 
     post_to_webhooks(
-        [
-            PRIVATE_CRYPTO_WEBHOOK,
-            WEBHOOK2
-        ],
+        [PRIVATE_CRYPTO_WEBHOOK, WEBHOOK2],
         title,
         description,
         fields,
@@ -444,10 +415,7 @@ def send_stock_alert(
 ):
 
     post_to_webhooks(
-        [
-            PRIVATE_STOCK_WEBHOOK,
-            WEBHOOK2
-        ],
+        [PRIVATE_STOCK_WEBHOOK, WEBHOOK2],
         title,
         description,
         fields,
@@ -463,9 +431,7 @@ def send_insider_alert(
 ):
 
     post_to_webhooks(
-        [
-            PRIVATE_INSIDER_WEBHOOK
-        ],
+        [PRIVATE_INSIDER_WEBHOOK],
         title,
         description,
         fields,
@@ -512,10 +478,7 @@ def get_crypto_products():
             continue
 
         product_id = product.get("id")
-
-        base = product.get(
-            "base_currency"
-        )
+        base = product.get("base_currency")
 
         if not product_id or not base:
             continue
@@ -523,13 +486,9 @@ def get_crypto_products():
         if base in ignored:
             continue
 
-        result.append(
-            product_id
-        )
+        result.append(product_id)
 
-    return sorted(
-        set(result)
-    )
+    return sorted(set(result))
 
 
 # =========================================================
@@ -539,7 +498,6 @@ def get_crypto_products():
 def get_seen_assets():
 
     with get_database() as conn:
-
         with conn.cursor() as cursor:
 
             cursor.execute(
@@ -552,9 +510,7 @@ def get_seen_assets():
             }
 
 
-def save_assets(
-    assets
-):
+def save_assets(assets):
 
     if not assets:
         return
@@ -565,7 +521,6 @@ def save_assets(
     ]
 
     with get_database() as conn:
-
         with conn.cursor() as cursor:
 
             execute_values(
@@ -582,14 +537,11 @@ def save_assets(
             )
 
 
-def check_new_coinbase_assets(
-    seen_assets
-):
+def check_new_coinbase_assets(seen_assets):
 
     products = get_coinbase_products()
 
     current_assets = set()
-
     markets_by_asset = {}
 
     for product in products:
@@ -597,37 +549,23 @@ def check_new_coinbase_assets(
         if product.get("status") != "online":
             continue
 
-        base = product.get(
-            "base_currency"
-        )
-
-        product_id = product.get(
-            "id"
-        )
+        base = product.get("base_currency")
+        product_id = product.get("id")
 
         if not base or not product_id:
             continue
 
-        current_assets.add(
-            base
-        )
+        current_assets.add(base)
 
         markets_by_asset.setdefault(
             base,
             []
-        ).append(
-            product_id
-        )
+        ).append(product_id)
 
     if not seen_assets:
 
-        save_assets(
-            current_assets
-        )
-
-        seen_assets.update(
-            current_assets
-        )
+        save_assets(current_assets)
+        seen_assets.update(current_assets)
 
         print(
             f"Coinbase baseline created: "
@@ -636,28 +574,15 @@ def check_new_coinbase_assets(
 
         return
 
-    new_assets = (
-        current_assets
-        - seen_assets
-    )
+    new_assets = current_assets - seen_assets
 
-    for asset in sorted(
-        new_assets
-    ):
+    for asset in sorted(new_assets):
 
-        save_assets(
-            {asset}
-        )
-
-        seen_assets.add(
-            asset
-        )
+        save_assets({asset})
+        seen_assets.add(asset)
 
         markets = sorted(
-            markets_by_asset.get(
-                asset,
-                []
-            )
+            markets_by_asset.get(asset, [])
         )
 
         market_text = ", ".join(
@@ -674,26 +599,21 @@ def check_new_coinbase_assets(
             [
                 {
                     "name": "Markets",
-                    "value":
-                        market_text or "Unknown",
+                    "value": market_text or "Unknown",
                     "inline": False
                 }
             ],
             color=5763719
         )
 
-        print(
-            f"NEW COINBASE ASSET: {asset}"
-        )
+        print(f"NEW COINBASE ASSET: {asset}")
 
 
 # =========================================================
 # COINBASE WEBSOCKET
 # =========================================================
 
-def websocket_on_open(
-    ws
-):
+def websocket_on_open(ws):
 
     print(
         f"Coinbase WebSocket connected. "
@@ -709,82 +629,51 @@ def websocket_on_open(
         chunk_size
     ):
 
-        chunk = (
-            coinbase_product_ids[
-                start:
-                start + chunk_size
-            ]
-        )
+        chunk = coinbase_product_ids[
+            start:start + chunk_size
+        ]
 
         ws.send(
             json.dumps({
                 "type": "subscribe",
                 "product_ids": chunk,
-                "channels": [
-                    "ticker"
-                ]
+                "channels": ["ticker"]
             })
         )
 
-        time.sleep(
-            0.25
-        )
+        time.sleep(0.25)
 
 
-def websocket_on_message(
-    ws,
-    message
-):
+def websocket_on_message(ws, message):
 
     try:
 
-        data = json.loads(
-            message
-        )
+        data = json.loads(message)
 
         if data.get("type") != "ticker":
             return
 
-        product_id = data.get(
-            "product_id"
-        )
-
-        price = data.get(
-            "price"
-        )
+        product_id = data.get("product_id")
+        price = data.get("price")
 
         if not product_id or not price:
             return
 
-        if not product_id.endswith(
-            "-USD"
-        ):
+        if not product_id.endswith("-USD"):
             return
 
         symbol = product_id[:-4]
 
         with crypto_prices_lock:
-
-            crypto_prices[
-                symbol
-            ] = float(price)
+            crypto_prices[symbol] = float(price)
 
     except Exception as exc:
 
-        print(
-            f"WebSocket message error: {exc}"
-        )
+        print(f"WebSocket message error: {exc}")
 
 
-def websocket_on_error(
-    ws,
-    error
-):
-
-    print(
-        f"Coinbase WebSocket error: "
-        f"{error}"
-    )
+def websocket_on_error(ws, error):
+    print(f"Coinbase WebSocket error: {error}")
 
 
 def websocket_on_close(
@@ -792,10 +681,7 @@ def websocket_on_close(
     close_status_code,
     close_msg
 ):
-
-    print(
-        "Coinbase WebSocket disconnected."
-    )
+    print("Coinbase WebSocket disconnected.")
 
 
 def run_coinbase_websocket():
@@ -819,42 +705,31 @@ def run_coinbase_websocket():
 
         except Exception as exc:
 
-            print(
-                f"WebSocket failure: {exc}"
-            )
+            print(f"WebSocket failure: {exc}")
 
         print(
             "Reconnecting WebSocket "
             "in 5 seconds..."
         )
 
-        time.sleep(
-            5
-        )
+        time.sleep(5)
 
 
 # =========================================================
 # CRYPTO DATABASE
 # =========================================================
 
-def save_crypto_samples(
-    prices
-):
+def save_crypto_samples(prices):
 
     if not prices:
         return
 
     rows = [
-        (
-            symbol,
-            price
-        )
-        for symbol, price
-        in prices.items()
+        (symbol, price)
+        for symbol, price in prices.items()
     ]
 
     with get_database() as conn:
-
         with conn.cursor() as cursor:
 
             execute_values(
@@ -873,7 +748,6 @@ def save_crypto_samples(
 def get_old_crypto_prices():
 
     with get_database() as conn:
-
         with conn.cursor() as cursor:
 
             cursor.execute(
@@ -889,9 +763,7 @@ def get_old_crypto_prices():
                     symbol,
                     sampled_at DESC;
                 """,
-                (
-                    CRYPTO_WINDOW_MINUTES,
-                )
+                (CRYPTO_WINDOW_MINUTES,)
             )
 
             return {
@@ -901,12 +773,9 @@ def get_old_crypto_prices():
             }
 
 
-def can_send_crypto_alert(
-    symbol
-):
+def can_send_crypto_alert(symbol):
 
     with get_database() as conn:
-
         with conn.cursor() as cursor:
 
             cursor.execute(
@@ -915,9 +784,7 @@ def can_send_crypto_alert(
                 FROM crypto_alerts
                 WHERE symbol = %s;
                 """,
-                (
-                    symbol,
-                )
+                (symbol,)
             )
 
             result = cursor.fetchone()
@@ -937,18 +804,12 @@ def can_send_crypto_alert(
                 )
             )
 
-            return bool(
-                cursor.fetchone()[0]
-            )
+            return bool(cursor.fetchone()[0])
 
 
-def record_crypto_alert(
-    symbol,
-    percent
-):
+def record_crypto_alert(symbol, percent):
 
     with get_database() as conn:
-
         with conn.cursor() as cursor:
 
             cursor.execute(
@@ -970,26 +831,16 @@ def record_crypto_alert(
                     last_alert_percent =
                         EXCLUDED.last_alert_percent;
                 """,
-                (
-                    symbol,
-                    percent
-                )
+                (symbol, percent)
             )
 
 
-def crypto_threshold(
-    symbol
-):
+def crypto_threshold(symbol):
 
     if symbol in MAJOR_CRYPTO:
+        return CRYPTO_MAJOR_SPIKE_PERCENT
 
-        return (
-            CRYPTO_MAJOR_SPIKE_PERCENT
-        )
-
-    return (
-        CRYPTO_SMALL_SPIKE_PERCENT
-    )
+    return CRYPTO_SMALL_SPIKE_PERCENT
 
 
 # =========================================================
@@ -999,10 +850,7 @@ def crypto_threshold(
 def check_all_crypto():
 
     with crypto_prices_lock:
-
-        current_prices = dict(
-            crypto_prices
-        )
+        current_prices = dict(crypto_prices)
 
     if not current_prices:
 
@@ -1013,13 +861,9 @@ def check_all_crypto():
 
         return
 
-    old_prices = (
-        get_old_crypto_prices()
-    )
+    old_prices = get_old_crypto_prices()
 
-    save_crypto_samples(
-        current_prices
-    )
+    save_crypto_samples(current_prices)
 
     print(
         f"Tracking "
@@ -1029,29 +873,19 @@ def check_all_crypto():
 
     candidates = []
 
-    for symbol, price in (
-        current_prices.items()
-    ):
+    for symbol, price in current_prices.items():
 
-        old_price = old_prices.get(
-            symbol
-        )
+        old_price = old_prices.get(symbol)
 
         if not old_price:
             continue
 
         percent = (
-            (
-                price - old_price
-            )
+            (price - old_price)
             / old_price
         ) * 100
 
-        threshold = (
-            crypto_threshold(
-                symbol
-            )
-        )
+        threshold = crypto_threshold(symbol)
 
         if abs(percent) >= threshold:
 
@@ -1066,12 +900,10 @@ def check_all_crypto():
             )
 
     candidates.sort(
-        key=lambda item:
-            abs(item[3]),
+        key=lambda item: abs(item[3]),
         reverse=True
     )
 
-    # Maximum 3 alerts each cycle
     for (
         symbol,
         price,
@@ -1080,14 +912,10 @@ def check_all_crypto():
         threshold
     ) in candidates[:3]:
 
-        if not can_send_crypto_alert(
-            symbol
-        ):
+        if not can_send_crypto_alert(symbol):
             continue
 
-        positive = (
-            percent >= 0
-        )
+        positive = percent >= 0
 
         send_crypto_alert(
             (
@@ -1106,20 +934,17 @@ def check_all_crypto():
             [
                 {
                     "name": "Current Price",
-                    "value":
-                        f"${price:,.8f}",
+                    "value": f"${price:,.8f}",
                     "inline": True
                 },
                 {
                     "name": "Earlier Price",
-                    "value":
-                        f"${old_price:,.8f}",
+                    "value": f"${old_price:,.8f}",
                     "inline": True
                 },
                 {
                     "name": "Move",
-                    "value":
-                        f"{percent:+.2f}%",
+                    "value": f"{percent:+.2f}%",
                     "inline": True
                 }
             ],
@@ -1130,23 +955,16 @@ def check_all_crypto():
             )
         )
 
-        record_crypto_alert(
-            symbol,
-            percent
-        )
+        record_crypto_alert(symbol, percent)
 
 
 # =========================================================
 # STOCK DATABASE
 # =========================================================
 
-def save_stock_sample(
-    symbol,
-    price
-):
+def save_stock_sample(symbol, price):
 
     with get_database() as conn:
-
         with conn.cursor() as cursor:
 
             cursor.execute(
@@ -1157,19 +975,13 @@ def save_stock_sample(
                 )
                 VALUES (%s, %s);
                 """,
-                (
-                    symbol,
-                    price
-                )
+                (symbol, price)
             )
 
 
-def get_old_stock_price(
-    symbol
-):
+def get_old_stock_price(symbol):
 
     with get_database() as conn:
-
         with conn.cursor() as cursor:
 
             cursor.execute(
@@ -1195,17 +1007,12 @@ def get_old_stock_price(
             if not result:
                 return None
 
-            return float(
-                result[0]
-            )
+            return float(result[0])
 
 
-def can_send_stock_alert(
-    symbol
-):
+def can_send_stock_alert(symbol):
 
     with get_database() as conn:
-
         with conn.cursor() as cursor:
 
             cursor.execute(
@@ -1214,9 +1021,7 @@ def can_send_stock_alert(
                 FROM stock_alerts
                 WHERE symbol = %s;
                 """,
-                (
-                    symbol,
-                )
+                (symbol,)
             )
 
             result = cursor.fetchone()
@@ -1236,18 +1041,12 @@ def can_send_stock_alert(
                 )
             )
 
-            return bool(
-                cursor.fetchone()[0]
-            )
+            return bool(cursor.fetchone()[0])
 
 
-def record_stock_alert(
-    symbol,
-    percent
-):
+def record_stock_alert(symbol, percent):
 
     with get_database() as conn:
-
         with conn.cursor() as cursor:
 
             cursor.execute(
@@ -1269,10 +1068,7 @@ def record_stock_alert(
                     last_alert_percent =
                         EXCLUDED.last_alert_percent;
                 """,
-                (
-                    symbol,
-                    percent
-                )
+                (symbol, percent)
             )
 
 
@@ -1280,9 +1076,7 @@ def record_stock_alert(
 # FINNHUB STOCK DATA
 # =========================================================
 
-def get_stock_quote(
-    symbol
-):
+def get_stock_quote(symbol):
 
     if not FINNHUB_API_KEY:
         raise RuntimeError(
@@ -1307,7 +1101,6 @@ def get_stock_quote(
     )
 
     if current <= 0:
-
         raise RuntimeError(
             f"No valid quote for {symbol}"
         )
@@ -1315,23 +1108,12 @@ def get_stock_quote(
     return data
 
 
-def check_stock_symbol(
-    symbol
-):
+def check_stock_symbol(symbol):
 
-    data = get_stock_quote(
-        symbol
-    )
+    data = get_stock_quote(symbol)
 
-    current_price = float(
-        data["c"]
-    )
-
-    old_price = (
-        get_old_stock_price(
-            symbol
-        )
-    )
+    current_price = float(data["c"])
+    old_price = get_old_stock_price(symbol)
 
     save_stock_sample(
         symbol,
@@ -1347,24 +1129,17 @@ def check_stock_symbol(
         return
 
     percent = (
-        (
-            current_price
-            - old_price
-        )
+        (current_price - old_price)
         / old_price
     ) * 100
 
     if abs(percent) < STOCK_MOVE_PERCENT:
         return
 
-    if not can_send_stock_alert(
-        symbol
-    ):
+    if not can_send_stock_alert(symbol):
         return
 
-    positive = (
-        percent >= 0
-    )
+    positive = percent >= 0
 
     send_stock_alert(
         (
@@ -1383,14 +1158,12 @@ def check_stock_symbol(
         [
             {
                 "name": "Current Price",
-                "value":
-                    f"${current_price:,.2f}",
+                "value": f"${current_price:,.2f}",
                 "inline": True
             },
             {
                 "name": "Move",
-                "value":
-                    f"{percent:+.2f}%",
+                "value": f"{percent:+.2f}%",
                 "inline": True
             }
         ],
@@ -1455,7 +1228,6 @@ def get_sec_ticker_map():
 def sec_database_empty():
 
     with get_database() as conn:
-
         with conn.cursor() as cursor:
 
             cursor.execute(
@@ -1465,18 +1237,12 @@ def sec_database_empty():
                 """
             )
 
-            return (
-                cursor.fetchone()[0]
-                == 0
-            )
+            return cursor.fetchone()[0] == 0
 
 
-def sec_filing_seen(
-    accession
-):
+def sec_filing_seen(accession):
 
     with get_database() as conn:
-
         with conn.cursor() as cursor:
 
             cursor.execute(
@@ -1485,15 +1251,10 @@ def sec_filing_seen(
                 FROM seen_sec_filings
                 WHERE accession_number = %s;
                 """,
-                (
-                    accession,
-                )
+                (accession,)
             )
 
-            return (
-                cursor.fetchone()
-                is not None
-            )
+            return cursor.fetchone() is not None
 
 
 def save_sec_filing(
@@ -1505,7 +1266,6 @@ def save_sec_filing(
 ):
 
     with get_database() as conn:
-
         with conn.cursor() as cursor:
 
             cursor.execute(
@@ -1560,31 +1320,19 @@ def get_recent_form4_filings(
     data = response.json()
 
     recent = (
-        data.get(
-            "filings",
-            {}
-        )
-        .get(
-            "recent",
-            {}
-        )
+        data.get("filings", {})
+        .get("recent", {})
     )
 
-    forms = recent.get(
-        "form",
-        []
-    )
-
+    forms = recent.get("form", [])
     accession_numbers = recent.get(
         "accessionNumber",
         []
     )
-
     filing_dates = recent.get(
         "filingDate",
         []
     )
-
     primary_documents = recent.get(
         "primaryDocument",
         []
@@ -1592,21 +1340,15 @@ def get_recent_form4_filings(
 
     filings = []
 
-    for index, form_type in enumerate(
-        forms
-    ):
+    for index, form_type in enumerate(forms):
 
         if form_type != "4":
             continue
 
-        if index >= len(
-            accession_numbers
-        ):
+        if index >= len(accession_numbers):
             continue
 
-        accession = (
-            accession_numbers[index]
-        )
+        accession = accession_numbers[index]
 
         filing_date = (
             filing_dates[index]
@@ -1620,16 +1362,12 @@ def get_recent_form4_filings(
             else ""
         )
 
-        accession_clean = (
-            accession.replace(
-                "-",
-                ""
-            )
+        accession_clean = accession.replace(
+            "-",
+            ""
         )
 
-        cik_clean = str(
-            int(cik)
-        )
+        cik_clean = str(int(cik))
 
         filing_url = (
             "https://www.sec.gov/Archives/"
@@ -1662,9 +1400,7 @@ def safe_xml_text(
     if element is None:
         return default
 
-    found = element.find(
-        path
-    )
+    found = element.find(path)
 
     if found is None:
         return default
@@ -1672,51 +1408,37 @@ def safe_xml_text(
     if found.text is None:
         return default
 
-    return (
-        found.text.strip()
-    )
+    return found.text.strip()
 
 
-def format_money(
-    value
-):
+def format_money(value):
 
     try:
 
-        number = float(
-            value
-        )
+        number = float(value)
 
         if number >= 1_000_000_000:
-
             return (
                 f"${number / 1_000_000_000:.2f}B"
             )
 
         if number >= 1_000_000:
-
             return (
                 f"${number / 1_000_000:.2f}M"
             )
 
         if number >= 1_000:
-
             return (
                 f"${number / 1_000:.2f}K"
             )
 
-        return (
-            f"${number:,.2f}"
-        )
+        return f"${number:,.2f}"
 
     except Exception:
-
         return "Unknown"
 
 
-def transaction_name(
-    code
-):
+def transaction_name(code):
 
     names = {
         "P": "🟢 Open-market BUY",
@@ -1736,9 +1458,7 @@ def transaction_name(
     )
 
 
-def get_form4_xml(
-    filing_url
-):
+def get_form4_xml(filing_url):
 
     response = http.get(
         filing_url,
@@ -1751,13 +1471,9 @@ def get_form4_xml(
     return response.text
 
 
-def parse_form4(
-    xml_text
-):
+def parse_form4(xml_text):
 
-    root = ET.fromstring(
-        xml_text
-    )
+    root = ET.fromstring(xml_text)
 
     owner = root.find(
         ".//reportingOwner"
@@ -1771,7 +1487,6 @@ def parse_form4(
     relationship = None
 
     if owner is not None:
-
         relationship = owner.find(
             ".//reportingOwnerRelationship"
         )
@@ -1805,30 +1520,18 @@ def parse_form4(
         )
 
         if is_director == "1":
-
-            roles.append(
-                "Director"
-            )
+            roles.append("Director")
 
         if is_officer == "1":
 
             if officer_title:
-
-                roles.append(
-                    officer_title
-                )
+                roles.append(officer_title)
 
             else:
-
-                roles.append(
-                    "Officer"
-                )
+                roles.append("Officer")
 
         if is_ten_percent == "1":
-
-            roles.append(
-                "10% Owner"
-            )
+            roles.append("10% Owner")
 
     role = (
         ", ".join(roles)
@@ -1867,56 +1570,33 @@ def parse_form4(
         )
 
         try:
-
-            shares = float(
-                shares_text
-            )
-
+            shares = float(shares_text)
         except Exception:
-
             shares = 0
 
         try:
-
-            price = float(
-                price_text
-            )
-
+            price = float(price_text)
         except Exception:
-
             price = None
 
         value = None
 
-        if (
-            shares > 0
-            and price is not None
-        ):
-
-            value = (
-                shares * price
-            )
+        if shares > 0 and price is not None:
+            value = shares * price
 
         transactions.append({
             "code": code,
-            "action":
-                transaction_name(
-                    code
-                ),
+            "action": transaction_name(code),
             "shares": shares,
             "price": price,
             "value": value,
-            "direction":
-                acquired_disposed
+            "direction": acquired_disposed
         })
 
     return {
-        "insider":
-            insider_name,
-        "role":
-            role,
-        "transactions":
-            transactions
+        "insider": insider_name,
+        "role": role,
+        "transactions": transactions
     }
 
 
@@ -1936,30 +1616,16 @@ def send_parsed_form4_alert(
             filing["url"]
         )
 
-        parsed = parse_form4(
-            xml_text
-        )
+        parsed = parse_form4(xml_text)
 
-        insider = parsed[
-            "insider"
-        ]
-
-        role = parsed[
-            "role"
-        ]
-
-        transactions = parsed[
-            "transactions"
-        ]
+        insider = parsed["insider"]
+        role = parsed["role"]
+        transactions = parsed["transactions"]
 
         important = [
             transaction
             for transaction in transactions
-            if transaction["code"]
-            in {
-                "P",
-                "S"
-            }
+            if transaction["code"] in {"P", "S"}
         ]
 
         display_transactions = (
@@ -1971,41 +1637,26 @@ def send_parsed_form4_alert(
         fields = [
             {
                 "name": "Insider",
-                "value":
-                    insider,
+                "value": insider,
                 "inline": True
             },
             {
                 "name": "Role",
-                "value":
-                    role,
+                "value": role,
                 "inline": True
             },
             {
                 "name": "Filed",
-                "value":
-                    filing[
-                        "filing_date"
-                    ],
+                "value": filing["filing_date"],
                 "inline": True
             }
         ]
 
-        for transaction in (
-            display_transactions[:4]
-        ):
+        for transaction in display_transactions[:4]:
 
-            shares = transaction[
-                "shares"
-            ]
-
-            price = transaction[
-                "price"
-            ]
-
-            value = transaction[
-                "value"
-            ]
+            shares = transaction["shares"]
+            price = transaction["price"]
+            value = transaction["value"]
 
             transaction_text = (
                 f"**{transaction['action']}**\n"
@@ -2027,57 +1678,40 @@ def send_parsed_form4_alert(
                 )
 
             fields.append({
-                "name":
-                    "Transaction",
-                "value":
-                    transaction_text,
-                "inline":
-                    False
+                "name": "Transaction",
+                "value": transaction_text,
+                "inline": False
             })
 
         fields.append({
-            "name":
-                "Official SEC Filing",
-            "value":
-                filing["url"],
-            "inline":
-                False
+            "name": "Official SEC Filing",
+            "value": filing["url"],
+            "inline": False
         })
 
         has_purchase = any(
             transaction["code"] == "P"
-            for transaction
-            in transactions
+            for transaction in transactions
         )
 
         has_sale = any(
             transaction["code"] == "S"
-            for transaction
-            in transactions
+            for transaction in transactions
         )
 
         if has_purchase:
 
-            title = (
-                "🟢 INSIDER BUY"
-            )
-
+            title = "🟢 INSIDER BUY"
             color = 5763719
 
         elif has_sale:
 
-            title = (
-                "🔴 INSIDER SALE"
-            )
-
+            title = "🔴 INSIDER SALE"
             color = 15548997
 
         else:
 
-            title = (
-                "🧠 INSIDER FORM 4"
-            )
-
+            title = "🧠 INSIDER FORM 4"
             color = 10181046
 
         send_insider_alert(
@@ -2108,24 +1742,14 @@ def send_parsed_form4_alert(
             ),
             [
                 {
-                    "name":
-                        "Filed",
-                    "value":
-                        filing[
-                            "filing_date"
-                        ],
-                    "inline":
-                        True
+                    "name": "Filed",
+                    "value": filing["filing_date"],
+                    "inline": True
                 },
                 {
-                    "name":
-                        "Official SEC Filing",
-                    "value":
-                        filing[
-                            "url"
-                        ],
-                    "inline":
-                        False
+                    "name": "Official SEC Filing",
+                    "value": filing["url"],
+                    "inline": False
                 }
             ]
         )
@@ -2138,9 +1762,7 @@ def check_sec_insider_filings(
 
     for ticker in STOCK_SYMBOLS:
 
-        info = ticker_map.get(
-            ticker
-        )
+        info = ticker_map.get(ticker)
 
         if not info:
 
@@ -2153,38 +1775,28 @@ def check_sec_insider_filings(
 
         try:
 
-            filings = (
-                get_recent_form4_filings(
-                    ticker,
-                    info["cik"],
-                    info["company"]
-                )
+            filings = get_recent_form4_filings(
+                ticker,
+                info["cik"],
+                info["company"]
             )
 
             for filing in filings[:10]:
 
-                accession = (
-                    filing["accession"]
-                )
+                accession = filing["accession"]
 
-                if sec_filing_seen(
-                    accession
-                ):
-
+                if sec_filing_seen(accession):
                     continue
 
                 save_sec_filing(
                     accession,
                     ticker,
                     info["company"],
-                    filing[
-                        "filing_date"
-                    ],
+                    filing["filing_date"],
                     "4"
                 )
 
                 if baseline:
-
                     continue
 
                 send_parsed_form4_alert(
@@ -2199,9 +1811,7 @@ def check_sec_insider_filings(
                     f"{accession}"
                 )
 
-            time.sleep(
-                0.25
-            )
+            time.sleep(0.25)
 
         except Exception as exc:
 
@@ -2218,7 +1828,6 @@ def check_sec_insider_filings(
 def clean_old_samples():
 
     with get_database() as conn:
-
         with conn.cursor() as cursor:
 
             cursor.execute("""
@@ -2237,6 +1846,60 @@ def clean_old_samples():
 
 
 # =========================================================
+# AI PAPER TRADER
+# =========================================================
+
+def run_ai_trader_cycle():
+
+    global ai_last_result
+
+    try:
+
+        print("Running AI trader cycle...")
+
+        result = run_ai_cycle()
+
+        with ai_result_lock:
+            ai_last_result = result
+
+        print(
+            f"AI TRADER: "
+            f"{result['product']} | "
+            f"{result['decision']} | "
+            f"Confidence "
+            f"{result['confidence'] * 100:.1f}% | "
+            f"Portfolio "
+            f"£{result['portfolio_value']:.2f}"
+        )
+
+        if result.get("opened_position"):
+
+            position = result["opened_position"]
+
+            print(
+                f"AI PAPER BUY: "
+                f"{result['product']} "
+                f"@ ${position['entry_price']:,.2f}"
+            )
+
+        if result.get("closed_trade"):
+
+            trade = result["closed_trade"]
+
+            print(
+                f"AI PAPER CLOSE: "
+                f"PnL £{trade['pnl']:+.2f} "
+                f"({trade['reason']})"
+            )
+
+    except Exception as exc:
+
+        print(
+            f"AI trader error: {exc}"
+        )
+
+
+# =========================================================
 # BACKGROUND MONITOR
 # =========================================================
 
@@ -2246,16 +1909,13 @@ def monitor_main():
     global coinbase_product_ids
 
     if monitor_started:
-
         return
 
     monitor_started = True
 
     create_tables()
 
-    seen_assets = (
-        get_seen_assets()
-    )
+    seen_assets = get_seen_assets()
 
     coinbase_product_ids = (
         get_crypto_products()
@@ -2267,13 +1927,9 @@ def monitor_main():
 
         try:
 
-            sec_ticker_map = (
-                get_sec_ticker_map()
-            )
+            sec_ticker_map = get_sec_ticker_map()
 
-            first_sec_run = (
-                sec_database_empty()
-            )
+            first_sec_run = sec_database_empty()
 
             check_sec_insider_filings(
                 sec_ticker_map,
@@ -2281,7 +1937,6 @@ def monitor_main():
             )
 
             if first_sec_run:
-
                 print(
                     "SEC Form 4 baseline created."
                 )
@@ -2298,13 +1953,8 @@ def monitor_main():
                 f"SEC setup error: {exc}"
             )
 
-    print(
-        "================================"
-    )
-
-    print(
-        "ALPHA ALERTS ONLINE"
-    )
+    print("================================")
+    print("ALPHA ALERTS ONLINE")
 
     print(
         f"Coinbase assets remembered: "
@@ -2327,8 +1977,11 @@ def monitor_main():
     )
 
     print(
-        "================================"
+        f"AI paper trader interval: "
+        f"{AI_CHECK_INTERVAL}s"
     )
+
+    print("================================")
 
     websocket_thread = threading.Thread(
         target=run_coinbase_websocket,
@@ -2340,6 +1993,7 @@ def monitor_main():
     last_stock_check = 0
     last_listing_check = 0
     last_sec_check = time.time()
+    last_ai_check = 0
 
     cleanup_counter = 0
 
@@ -2347,15 +2001,11 @@ def monitor_main():
 
         now = time.time()
 
-
         # =================================================
         # COINBASE LISTINGS
         # =================================================
 
-        if (
-            now - last_listing_check
-            >= 60
-        ):
+        if now - last_listing_check >= 60:
 
             try:
 
@@ -2372,13 +2022,11 @@ def monitor_main():
 
             last_listing_check = now
 
-
         # =================================================
         # CRYPTO
         # =================================================
 
         try:
-
             check_all_crypto()
 
         except Exception as exc:
@@ -2388,6 +2036,18 @@ def monitor_main():
                 f"{exc}"
             )
 
+        # =================================================
+        # AI PAPER TRADER
+        # =================================================
+
+        if (
+            now - last_ai_check
+            >= AI_CHECK_INTERVAL
+        ):
+
+            run_ai_trader_cycle()
+
+            last_ai_check = time.time()
 
         # =================================================
         # STOCKS
@@ -2408,10 +2068,7 @@ def monitor_main():
             for symbol in STOCK_SYMBOLS:
 
                 try:
-
-                    check_stock_symbol(
-                        symbol
-                    )
+                    check_stock_symbol(symbol)
 
                 except Exception as exc:
 
@@ -2420,14 +2077,9 @@ def monitor_main():
                         f"{exc}"
                     )
 
-                time.sleep(
-                    1
-                )
+                time.sleep(1)
 
-            last_stock_check = (
-                time.time()
-            )
-
+            last_stock_check = time.time()
 
         # =================================================
         # SEC INSIDER
@@ -2460,10 +2112,7 @@ def monitor_main():
                     f"{exc}"
                 )
 
-            last_sec_check = (
-                time.time()
-            )
-
+            last_sec_check = time.time()
 
         # =================================================
         # CLEANUP
@@ -2489,9 +2138,7 @@ def monitor_main():
 
             cleanup_counter = 0
 
-        time.sleep(
-            CHECK_INTERVAL
-        )
+        time.sleep(CHECK_INTERVAL)
 
 
 # =========================================================
@@ -2564,10 +2211,10 @@ async def status(
 ):
 
     with crypto_prices_lock:
+        crypto_count = len(crypto_prices)
 
-        crypto_count = len(
-            crypto_prices
-        )
+    with ai_result_lock:
+        ai_ready = ai_last_result is not None
 
     embed = discord.Embed(
         title="🟢 Alpha Alerts Status",
@@ -2576,17 +2223,13 @@ async def status(
 
     embed.add_field(
         name="Live Crypto Markets",
-        value=str(
-            crypto_count
-        ),
+        value=str(crypto_count),
         inline=True
     )
 
     embed.add_field(
         name="Stock Watchlist",
-        value=str(
-            len(STOCK_SYMBOLS)
-        ),
+        value=str(len(STOCK_SYMBOLS)),
         inline=True
     )
 
@@ -2603,34 +2246,37 @@ async def status(
     )
 
     embed.add_field(
-        name="Crypto Window",
+        name="AI Paper Trader",
         value=(
-            f"{CRYPTO_WINDOW_MINUTES}m"
+            "🟢 Active"
+            if ai_ready
+            else
+            "🟡 Starting"
         ),
+        inline=True
+    )
+
+    embed.add_field(
+        name="Crypto Window",
+        value=f"{CRYPTO_WINDOW_MINUTES}m",
         inline=True
     )
 
     embed.add_field(
         name="Major Crypto Trigger",
-        value=(
-            f"{CRYPTO_MAJOR_SPIKE_PERCENT}%"
-        ),
+        value=f"{CRYPTO_MAJOR_SPIKE_PERCENT}%",
         inline=True
     )
 
     embed.add_field(
         name="Altcoin Trigger",
-        value=(
-            f"{CRYPTO_SMALL_SPIKE_PERCENT}%"
-        ),
+        value=f"{CRYPTO_SMALL_SPIKE_PERCENT}%",
         inline=True
     )
 
     embed.add_field(
         name="Stock Trigger",
-        value=(
-            f"{STOCK_MOVE_PERCENT}%"
-        ),
+        value=f"{STOCK_MOVE_PERCENT}%",
         inline=True
     )
 
@@ -2655,15 +2301,10 @@ async def crypto(
     symbol: str
 ):
 
-    symbol = (
-        symbol.strip().upper()
-    )
+    symbol = symbol.strip().upper()
 
     with crypto_prices_lock:
-
-        price = crypto_prices.get(
-            symbol
-        )
+        price = crypto_prices.get(symbol)
 
     if price is None:
 
@@ -2681,9 +2322,7 @@ async def crypto(
         get_old_crypto_prices
     )
 
-    old_price = old_prices.get(
-        symbol
-    )
+    old_price = old_prices.get(symbol)
 
     move_text = (
         "Still collecting history."
@@ -2692,9 +2331,7 @@ async def crypto(
     if old_price:
 
         percent = (
-            (
-                price - old_price
-            )
+            (price - old_price)
             / old_price
         ) * 100
 
@@ -2706,9 +2343,7 @@ async def crypto(
 
     embed = discord.Embed(
         title=f"🪙 {symbol}",
-        description=(
-            f"**${price:,.8f}**"
-        ),
+        description=f"**${price:,.8f}**",
         color=3447003
     )
 
@@ -2745,9 +2380,7 @@ async def stock(
 
     await interaction.response.defer()
 
-    ticker = (
-        ticker.strip().upper()
-    )
+    ticker = ticker.strip().upper()
 
     try:
 
@@ -2780,9 +2413,7 @@ async def stock(
             data.get("pc", 0) or 0
         )
 
-        positive = (
-            change >= 0
-        )
+        positive = change >= 0
 
         embed = discord.Embed(
             title=(
@@ -2802,33 +2433,25 @@ async def stock(
 
         embed.add_field(
             name="Change",
-            value=(
-                f"${change:+,.2f}"
-            ),
+            value=f"${change:+,.2f}",
             inline=True
         )
 
         embed.add_field(
             name="High",
-            value=(
-                f"${high:,.2f}"
-            ),
+            value=f"${high:,.2f}",
             inline=True
         )
 
         embed.add_field(
             name="Low",
-            value=(
-                f"${low:,.2f}"
-            ),
+            value=f"${low:,.2f}",
             inline=True
         )
 
         embed.add_field(
             name="Previous Close",
-            value=(
-                f"${previous_close:,.2f}"
-            ),
+            value=f"${previous_close:,.2f}",
             inline=True
         )
 
@@ -2842,9 +2465,7 @@ async def stock(
 
     except Exception as exc:
 
-        print(
-            f"/stock error: {exc}"
-        )
+        print(f"/stock error: {exc}")
 
         await interaction.followup.send(
             (
@@ -2912,10 +2533,7 @@ async def watchlist(
 async def calculate_crypto_moves():
 
     with crypto_prices_lock:
-
-        current = dict(
-            crypto_prices
-        )
+        current = dict(crypto_prices)
 
     old = await asyncio.to_thread(
         get_old_crypto_prices
@@ -2923,21 +2541,15 @@ async def calculate_crypto_moves():
 
     results = []
 
-    for symbol, price in (
-        current.items()
-    ):
+    for symbol, price in current.items():
 
-        old_price = old.get(
-            symbol
-        )
+        old_price = old.get(symbol)
 
         if not old_price:
             continue
 
         percent = (
-            (
-                price - old_price
-            )
+            (price - old_price)
             / old_price
         ) * 100
 
@@ -2969,8 +2581,7 @@ async def movers(
     results = await calculate_crypto_moves()
 
     results.sort(
-        key=lambda item:
-            abs(item[2]),
+        key=lambda item: abs(item[2]),
         reverse=True
     )
 
@@ -3007,9 +2618,7 @@ async def movers(
             f"🔥 Biggest Crypto Movers "
             f"(~{CRYPTO_WINDOW_MINUTES}m)"
         ),
-        description="\n".join(
-            lines
-        ),
+        description="\n".join(lines),
         color=3447003
     )
 
@@ -3035,8 +2644,7 @@ async def topgainers(
     results = await calculate_crypto_moves()
 
     results.sort(
-        key=lambda item:
-            item[2],
+        key=lambda item: item[2],
         reverse=True
     )
 
@@ -3062,9 +2670,7 @@ async def topgainers(
 
     embed = discord.Embed(
         title="🚀 Top Crypto Gainers",
-        description="\n".join(
-            lines
-        ),
+        description="\n".join(lines),
         color=5763719
     )
 
@@ -3090,8 +2696,7 @@ async def toplosers(
     results = await calculate_crypto_moves()
 
     results.sort(
-        key=lambda item:
-            item[2]
+        key=lambda item: item[2]
     )
 
     bottom = results[:10]
@@ -3116,9 +2721,7 @@ async def toplosers(
 
     embed = discord.Embed(
         title="📉 Top Crypto Losers",
-        description="\n".join(
-            lines
-        ),
+        description="\n".join(lines),
         color=15548997
     )
 
@@ -3198,6 +2801,162 @@ async def alerts(
 
     await interaction.response.send_message(
         embed=embed
+    )
+
+
+# =========================================================
+# /AI — OWNER ONLY
+# =========================================================
+
+@bot.tree.command(
+    name="ai",
+    description="Show your private AI paper trader"
+)
+async def ai(
+    interaction: discord.Interaction
+):
+
+    if not is_bot_owner(interaction):
+
+        await reject_non_owner(
+            interaction
+        )
+
+        return
+
+    with ai_result_lock:
+
+        result = (
+            dict(ai_last_result)
+            if ai_last_result
+            else None
+        )
+
+    if not result:
+
+        await interaction.response.send_message(
+            (
+                "🧠 AI trader is still "
+                "waiting for its first cycle."
+            ),
+            ephemeral=True
+        )
+
+        return
+
+    decision = result["decision"]
+
+    confidence = (
+        result["confidence"]
+        * 100
+    )
+
+    if decision == "BUY":
+        decision_emoji = "🟢"
+
+    elif decision == "BEARISH":
+        decision_emoji = "🔴"
+
+    else:
+        decision_emoji = "🟡"
+
+    embed = discord.Embed(
+        title="🧠 Alpha AI Trader",
+        description=(
+            f"**{result['product']}**\n"
+            f"${result['price']:,.2f}"
+        ),
+        color=3447003
+    )
+
+    embed.add_field(
+        name="Decision",
+        value=(
+            f"{decision_emoji} "
+            f"**{decision}**"
+        ),
+        inline=True
+    )
+
+    embed.add_field(
+        name="Confidence",
+        value=f"{confidence:.1f}%",
+        inline=True
+    )
+
+    embed.add_field(
+        name="Paper Portfolio",
+        value=(
+            f"£{result['portfolio_value']:,.2f}"
+        ),
+        inline=True
+    )
+
+    embed.add_field(
+        name="Cash",
+        value=f"£{result['cash']:,.2f}",
+        inline=True
+    )
+
+    embed.add_field(
+        name="Realised P&L",
+        value=(
+            f"£{result['realized_pnl']:+,.2f}"
+        ),
+        inline=True
+    )
+
+    embed.add_field(
+        name="Record",
+        value=(
+            f"{result['wins']}W / "
+            f"{result['losses']}L"
+        ),
+        inline=True
+    )
+
+    position = result.get("position")
+
+    if position:
+
+        entry = position["entry_price"]
+        current = result["price"]
+
+        unrealized = (
+            (current / entry) - 1
+        ) * 100
+
+        embed.add_field(
+            name="📊 Open Paper Trade",
+            value=(
+                f"Entry: **${entry:,.2f}**\n"
+                f"Current: **${current:,.2f}**\n"
+                f"Move: **{unrealized:+.2f}%**\n"
+                f"Size: **£{position['value']:.2f}**\n"
+                f"Stop: **${position['stop_loss']:,.2f}**\n"
+                f"Target: **${position['take_profit']:,.2f}**"
+            ),
+            inline=False
+        )
+
+    else:
+
+        embed.add_field(
+            name="Position",
+            value="No open paper trade.",
+            inline=False
+        )
+
+    embed.set_footer(
+        text=(
+            "OWNER ONLY • PAPER TRADING • "
+            "No real funds"
+        )
+    )
+
+    await interaction.response.send_message(
+        embed=embed,
+        ephemeral=True
     )
 
 
