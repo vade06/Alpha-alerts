@@ -16,6 +16,7 @@ from dotenv import load_dotenv
 from psycopg2.extras import execute_values
 
 from ai_trader import run_ai_cycle, get_learning_stats
+from ai_backtest import run_backtest
 
 
 # =========================================================
