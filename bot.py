@@ -3100,42 +3100,184 @@ async def ai(
 
 def format_backtest_dm(result, days):
 
-  trades = int(result.get("trades", 0))
-  wins = int(result.get("wins", 0))
-  losses = int(result.get("losses", 0))
-  win_rate = float(result.get("win_rate", 0)) * 100
-  pnl = float(result.get("pnl", 0))
-  max_drawdown = float(result.get("max_drawdown", 0))
-  fee_per_side = float(result.get("fee_per_side", 0)) * 100
+  import math
+
+  strategy = result.get(
+    "strategy",
+    "AI"
+  )
+
+  trades = int(
+    result.get("trades", 0)
+  )
+
+  wins = int(
+    result.get("wins", 0)
+  )
+
+  losses = int(
+    result.get("losses", 0)
+  )
+
+  win_rate = float(
+    result.get("win_rate", 0)
+  ) * 100
+
+  gross_pnl = float(
+    result.get("gross_pnl", 0)
+  )
+
+  fees = float(
+    result.get("fees", 0)
+  )
+
+  pnl = float(
+    result.get("pnl", 0)
+  )
+
+  max_drawdown = float(
+    result.get("max_drawdown", 0)
+  )
+
+  average_win = float(
+    result.get("average_win", 0)
+  )
+
+  average_loss = float(
+    result.get("average_loss", 0)
+  )
+
+  expectancy = float(
+    result.get("expectancy", 0)
+  )
+
+  trades_per_day = float(
+    result.get("trades_per_day", 0)
+  )
+
+  profit_factor = float(
+    result.get("profit_factor", 0)
+  )
+
+  fee_per_side = float(
+    result.get("fee_per_side", 0)
+  ) * 100
+
+  if math.isinf(
+    profit_factor
+  ):
+    profit_factor_text = "∞"
+  else:
+    profit_factor_text = (
+      f"{profit_factor:.2f}"
+    )
 
   lines = [
+    f"Strategy: **{strategy}**",
     f"Period: **{result.get('days', days)} days**",
-    f"Markets completed: **{result.get('markets', 0)}**",
+    (
+      f"Markets completed: "
+      f"**{result.get('markets', 0)}**"
+    ),
   ]
 
   if "markets_discovered" in result:
+
     lines.append(
-      f"Markets discovered: **{result.get('markets_discovered', 0)}**"
+      (
+        f"Markets discovered: "
+        f"**{result.get('markets_discovered', 0)}**"
+      )
     )
+
     lines.append(
-      f"Markets skipped: **{result.get('markets_skipped', 0)}**"
+      (
+        f"Markets skipped: "
+        f"**{result.get('markets_skipped', 0)}**"
+      )
     )
 
   lines.extend([
+    "",
     f"Trades: **{trades}**",
+    (
+      f"Trades/day: "
+      f"**{trades_per_day:.1f}**"
+    ),
     f"Record: **{wins}W / {losses}L**",
     f"Win rate: **{win_rate:.1f}%**",
-    f"Total P&L: **GBP {pnl:+.2f}**",
-    f"Max drawdown: **GBP {max_drawdown:.2f}**",
+    "",
     (
-      f"Best market: **{result.get('best_market', 'N/A')}** "
-      f"(GBP {float(result.get('best_market_pnl', 0)):+.2f})"
+      f"Gross trading P&L: "
+      f"**GBP {gross_pnl:+.2f}**"
     ),
     (
-      f"Worst market: **{result.get('worst_market', 'N/A')}** "
-      f"(GBP {float(result.get('worst_market_pnl', 0)):+.2f})"
+      f"Estimated fees: "
+      f"**GBP -{fees:.2f}**"
     ),
-    f"Estimated fee / side: **{fee_per_side:.3f}%**",
+    (
+      f"Net P&L: "
+      f"**GBP {pnl:+.2f}**"
+    ),
+    (
+      f"Max drawdown: "
+      f"**GBP {max_drawdown:.2f}**"
+    ),
+    "",
+    (
+      f"Average winner: "
+      f"**GBP {average_win:+.2f}**"
+    ),
+    (
+      f"Average loser: "
+      f"**GBP {average_loss:+.2f}**"
+    ),
+    (
+      f"Profit factor: "
+      f"**{profit_factor_text}**"
+    ),
+    (
+      f"Expectancy / trade: "
+      f"**GBP {expectancy:+.3f}**"
+    ),
+  ])
+
+  if "profitable_markets" in result:
+
+    lines.extend([
+      "",
+      (
+        f"Profitable markets: "
+        f"**{result.get('profitable_markets', 0)}**"
+      ),
+      (
+        f"Losing markets: "
+        f"**{result.get('losing_markets', 0)}**"
+      ),
+      (
+        f"Flat markets: "
+        f"**{result.get('flat_markets', 0)}**"
+      ),
+    ])
+
+  lines.extend([
+    "",
+    (
+      f"Best market: "
+      f"**{result.get('best_market', 'N/A')}** "
+      f"(GBP "
+      f"{float(result.get('best_market_pnl', 0)):+.2f})"
+    ),
+    (
+      f"Worst market: "
+      f"**{result.get('worst_market', 'N/A')}** "
+      f"(GBP "
+      f"{float(result.get('worst_market_pnl', 0)):+.2f})"
+    ),
+    (
+      f"Estimated fee / side: "
+      f"**{fee_per_side:.3f}%**"
+    ),
   ])
 
   top_markets = result.get(
@@ -3144,22 +3286,36 @@ def format_backtest_dm(result, days):
   )
 
   if top_markets:
-    lines.append("")
-    lines.append("**Top markets:**")
 
-    for market in top_markets[:10]:
+    traded_top = [
+      market
+      for market in top_markets
+      if int(
+        market.get("trades", 0)
+      ) > 0
+    ]
+
+    if traded_top:
+
+      lines.append("")
       lines.append(
-        (
-          f"{market['product']} | "
-          f"{market['trades']} trades | "
-          f"{market['win_rate'] * 100:.1f}% WR | "
-          f"GBP {market['pnl']:+.2f}"
-        )
+        "**Top traded markets:**"
       )
 
+      for market in traded_top[:10]:
+
+        lines.append(
+          (
+            f"{market['product']} | "
+            f"{market['trades']} trades | "
+            f"{market['win_rate'] * 100:.1f}% WR | "
+            f"GBP {market['pnl']:+.2f}"
+          )
+        )
+
   return "\n".join(lines)
-
-
+  
+  
 def run_backtest_background(days):
 
   global backtest_running
