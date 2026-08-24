@@ -3149,15 +3149,53 @@ def format_stock_backtest_dm(result, days):
     wins = int(result.get("wins", 0))
     losses = int(result.get("losses", 0))
     win_rate = float(result.get("win_rate", 0)) * 100
+
     pnl = float(result.get("pnl", 0))
     gross_pnl = float(result.get("gross_pnl", 0))
     fees = float(result.get("fees", 0))
-    profit_factor = float(result.get("profit_factor", 0))
-    expectancy = float(result.get("expectancy", 0))
-    max_drawdown = float(result.get("max_drawdown", 0))
+
+    fixed_size_pnl = float(
+        result.get(
+            "fixed_size_pnl",
+            0
+        )
+    )
+
+    sizing_improvement = float(
+        result.get(
+            "dynamic_sizing_improvement",
+            pnl - fixed_size_pnl
+        )
+    )
+
+    average_trade_size = float(
+        result.get(
+            "average_trade_size",
+            0
+        )
+    )
+
+    profit_factor = float(
+        result.get("profit_factor", 0)
+    )
+
+    expectancy = float(
+        result.get("expectancy", 0)
+    )
+
+    max_drawdown = float(
+        result.get("max_drawdown", 0)
+    )
+
+    worst_symbol_drawdown = float(
+        result.get(
+            "worst_symbol_drawdown",
+            0
+        )
+    )
 
     lines = [
-        f"Strategy: **{result.get('strategy', 'STOCK_V1')}**",
+        f"Strategy: **{result.get('strategy', 'STOCK_AI')}**",
         f"Unseen test: **{result.get('days', days)} days**",
         f"Training period: **~{result.get('training_days', 0)} days**",
         f"Symbols configured: **{result.get('symbols_configured', 0)}**",
@@ -3171,10 +3209,15 @@ def format_stock_backtest_dm(result, days):
         "",
         f"Gross P&L: **GBP {gross_pnl:+.2f}**",
         f"Trading costs: **GBP {fees:.2f}**",
-        f"Net P&L: **GBP {pnl:+.2f}**",
+        f"Dynamic-size net P&L: **GBP {pnl:+.2f}**",
+        f"Fixed GBP 100 P&L: **GBP {fixed_size_pnl:+.2f}**",
+        f"Sizing improvement: **GBP {sizing_improvement:+.2f}**",
+        f"Average trade size: **GBP {average_trade_size:.2f}**",
+        "",
         f"Profit factor: **{profit_factor:.2f}**",
         f"Expectancy/trade: **GBP {expectancy:+.3f}**",
-        f"Max drawdown: **GBP {max_drawdown:.2f}**",
+        f"Portfolio max drawdown: **GBP {max_drawdown:.2f}**",
+        f"Worst symbol drawdown: **GBP {worst_symbol_drawdown:.2f}**",
         "",
         (
             f"Best symbol: **{result.get('best_symbol', 'N/A')}** "
@@ -3185,6 +3228,43 @@ def format_stock_backtest_dm(result, days):
             f"(GBP {float(result.get('worst_symbol_pnl', 0)):+.2f})"
         ),
     ]
+
+    confidence_report = result.get(
+        "confidence_report",
+        []
+    )
+
+    if confidence_report:
+
+        lines.append("")
+        lines.append("**Calibrated confidence:**")
+
+        for item in confidence_report:
+
+            lines.append(
+                (
+                    f"{item.get('bucket', '?')}% | "
+                    f"{item.get('trades', 0)} trades | "
+                    f"{float(item.get('win_rate', 0)) * 100:.1f}% WR | "
+                    f"GBP {float(item.get('pnl', 0)):+.2f}"
+                )
+            )
+
+    exit_reasons = result.get(
+        "exit_reasons",
+        {}
+    )
+
+    if exit_reasons:
+
+        lines.append("")
+        lines.append("**Exit reasons:**")
+
+        for reason, count in exit_reasons.items():
+
+            lines.append(
+                f"{reason}: **{count}**"
+            )
 
     top_symbols = result.get(
         "top_symbols",
@@ -3208,7 +3288,6 @@ def format_stock_backtest_dm(result, days):
             )
 
     return "\n".join(lines)
-
 
 # =========================================================
 # CRYPTO BACKTEST BACKGROUND
