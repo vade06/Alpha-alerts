@@ -10,13 +10,14 @@ from sklearn.ensemble import (
     RandomForestClassifier,
     RandomForestRegressor,
 )
+from sklearn.isotonic import IsotonicRegression
 
 
 # =========================================================
-# STOCK AI BACKTEST V3
+# STOCK AI BACKTEST V4
 # =========================================================
 
-STRATEGY_NAME = "STOCK_V3"
+STRATEGY_NAME = "STOCK_V4"
 INTERVAL = "1h"
 
 DEFAULT_TEST_DAYS = int(
@@ -31,7 +32,6 @@ MAX_TOTAL_DAYS = int(
     os.getenv("STOCK_MAX_TOTAL_DAYS", "365")
 )
 
-# Retrain every ~5 US trading days.
 RETRAIN_EVERY_BARS = int(
     os.getenv("STOCK_RETRAIN_EVERY_BARS", "35")
 )
@@ -62,19 +62,11 @@ BENCHMARK_SYMBOL = os.getenv(
 
 
 # =========================================================
-# CORE ENTRY / RISK
+# ENTRY / RISK
 # =========================================================
 
 BUY_THRESHOLD = float(
     os.getenv("STOCK_BUY_THRESHOLD", "0.64")
-)
-
-STOP_LOSS_PCT = float(
-    os.getenv("STOCK_STOP_LOSS_PCT", "0.0125")
-)
-
-TAKE_PROFIT_PCT = float(
-    os.getenv("STOCK_TAKE_PROFIT_PCT", "0.030")
 )
 
 COMMISSION_PER_SIDE = float(
@@ -99,10 +91,38 @@ COOLDOWN_BARS = int(
 
 
 # =========================================================
+# ATR-BASED EXITS
+# =========================================================
+
+STOP_ATR_MULTIPLIER = float(
+    os.getenv("STOCK_STOP_ATR_MULTIPLIER", "1.35")
+)
+
+TARGET_ATR_MULTIPLIER = float(
+    os.getenv("STOCK_TARGET_ATR_MULTIPLIER", "2.75")
+)
+
+MIN_STOP_PCT = float(
+    os.getenv("STOCK_MIN_STOP_PCT", "0.006")
+)
+
+MAX_STOP_PCT = float(
+    os.getenv("STOCK_MAX_STOP_PCT", "0.0225")
+)
+
+MIN_TARGET_PCT = float(
+    os.getenv("STOCK_MIN_TARGET_PCT", "0.012")
+)
+
+MAX_TARGET_PCT = float(
+    os.getenv("STOCK_MAX_TARGET_PCT", "0.050")
+)
+
+
+# =========================================================
 # DYNAMIC POSITION SIZING
 # =========================================================
 
-# These are paper/backtest sizes.
 MIN_TRADE_SIZE = float(
     os.getenv("STOCK_MIN_TRADE_SIZE", "50.0")
 )
@@ -115,9 +135,16 @@ MAX_TRADE_SIZE = float(
     os.getenv("STOCK_MAX_TRADE_SIZE", "200.0")
 )
 
-# Extra weight applied to predicted edge.
 EDGE_SIZE_WEIGHT = float(
-    os.getenv("STOCK_EDGE_SIZE_WEIGHT", "0.50")
+    os.getenv("STOCK_EDGE_SIZE_WEIGHT", "0.45")
+)
+
+CONFIDENCE_SIZE_WEIGHT = float(
+    os.getenv("STOCK_CONFIDENCE_SIZE_WEIGHT", "0.40")
+)
+
+VOLATILITY_SIZE_WEIGHT = float(
+    os.getenv("STOCK_VOLATILITY_SIZE_WEIGHT", "0.15")
 )
 
 
@@ -150,6 +177,10 @@ MIN_TRAINING_ROWS = int(
 
 MIN_POSITIVE_EXAMPLES = int(
     os.getenv("STOCK_MIN_POSITIVE_EXAMPLES", "30")
+)
+
+CALIBRATION_FRACTION = float(
+    os.getenv("STOCK_CALIBRATION_FRACTION", "0.20")
 )
 
 
@@ -196,6 +227,10 @@ MIN_SYMBOL_QUALITY_SAMPLES = int(
 
 MIN_SYMBOL_NET_SUCCESS_RATE = float(
     os.getenv("STOCK_MIN_SYMBOL_NET_SUCCESS_RATE", "0.40")
+)
+
+MIN_SYMBOL_AVG_NET_RETURN = float(
+    os.getenv("STOCK_MIN_SYMBOL_AVG_NET_RETURN", "-0.001")
 )
 
 
@@ -394,7 +429,7 @@ def calculate_atr(data, period=14):
 
 
 # =========================================================
-# FEATURES
+# FEATURE ENGINEERING
 # =========================================================
 
 def build_feature_frame(
@@ -430,10 +465,7 @@ def build_feature_frame(
         8,
         16
     ):
-
-        data[
-            f"return_{n}"
-        ] = (
+        data[f"return_{n}"] = (
             data["close"]
             .pct_change(n)
         )
@@ -555,14 +587,12 @@ def build_feature_frame(
         / data["volume_std_20"].replace(0, np.nan)
     )
 
-    data["rsi"] = (
-        calculate_rsi(
-            data["close"]
-        )
+    data["rsi"] = calculate_rsi(
+        data["close"]
     )
 
-    data["atr"] = (
-        calculate_atr(data)
+    data["atr"] = calculate_atr(
+        data
     )
 
     data["atr_pct"] = (
@@ -672,7 +702,47 @@ def passes_entry_filter(row):
 
 
 # =========================================================
-# COSTS / LABELS
+# ADAPTIVE STOP / TARGET
+# =========================================================
+
+def calculate_stop_target_pct(row):
+
+    atr_pct = float(
+        row["atr_pct"]
+    )
+
+    stop_pct = float(
+        np.clip(
+            atr_pct
+            * STOP_ATR_MULTIPLIER,
+            MIN_STOP_PCT,
+            MAX_STOP_PCT
+        )
+    )
+
+    target_pct = float(
+        np.clip(
+            atr_pct
+            * TARGET_ATR_MULTIPLIER,
+            MIN_TARGET_PCT,
+            MAX_TARGET_PCT
+        )
+    )
+
+    # Preserve a worthwhile payoff ratio.
+    target_pct = max(
+        target_pct,
+        stop_pct * 1.75
+    )
+
+    return (
+        stop_pct,
+        target_pct
+    )
+
+
+# =========================================================
+# COSTS / TRAINING TARGETS
 # =========================================================
 
 def round_trip_cost_return(
@@ -703,21 +773,29 @@ def simulate_forward_trade(
     if final_index >= len(data):
         return None
 
+    row = data.iloc[index]
+
     entry = float(
-        data.iloc[index]["close"]
+        row["close"]
+    )
+
+    stop_pct, target_pct = (
+        calculate_stop_target_pct(
+            row
+        )
     )
 
     stop = (
         entry
         * (
-            1 - STOP_LOSS_PCT
+            1 - stop_pct
         )
     )
 
     target = (
         entry
         * (
-            1 + TAKE_PROFIT_PCT
+            1 + target_pct
         )
     )
 
@@ -751,7 +829,6 @@ def simulate_forward_trade(
             break
 
     if exit_price is None:
-
         exit_price = float(
             data.iloc[
                 final_index
@@ -859,7 +936,7 @@ def build_training_data(
 
 
 # =========================================================
-# QUALITY GATE
+# SYMBOL QUALITY
 # =========================================================
 
 def calculate_symbol_quality(
@@ -873,15 +950,8 @@ def calculate_symbol_quality(
     ):
 
         try:
-
-            if passes_entry_filter(
-                row
-            ):
-
-                filtered.append(
-                    row
-                )
-
+            if passes_entry_filter(row):
+                filtered.append(row)
         except Exception:
             continue
 
@@ -920,6 +990,14 @@ def calculate_symbol_quality(
         ].mean()
     )
 
+    passes = (
+        success_rate
+        >= MIN_SYMBOL_NET_SUCCESS_RATE
+        and
+        average_net_return
+        >= MIN_SYMBOL_AVG_NET_RETURN
+    )
+
     return {
         "samples":
             len(filtered_df),
@@ -931,16 +1009,26 @@ def calculate_symbol_quality(
             average_net_return,
 
         "passes":
-            (
-                success_rate
-                >= MIN_SYMBOL_NET_SUCCESS_RATE
-            ),
+            passes,
     }
 
 
 # =========================================================
-# MODELS
+# MODELS + PROBABILITY CALIBRATION
 # =========================================================
+
+def build_classifier():
+
+    return RandomForestClassifier(
+        n_estimators=500,
+        max_depth=9,
+        min_samples_leaf=10,
+        max_features="sqrt",
+        random_state=42,
+        class_weight="balanced_subsample",
+        n_jobs=-1
+    )
+
 
 def train_models(
     training_data
@@ -962,17 +1050,7 @@ def train_models(
         ]
     )
 
-    y_return = (
-        training_data[
-            "target_net_return"
-        ]
-    )
-
-    if (
-        y_class.nunique()
-        < 2
-    ):
-
+    if y_class.nunique() < 2:
         raise RuntimeError(
             "Training data contains only "
             "one target class."
@@ -988,59 +1066,123 @@ def train_models(
         positive_count
         < MIN_POSITIVE_EXAMPLES
     ):
-
         raise RuntimeError(
             "Not enough positive "
             "training examples."
         )
 
-    X = (
-        training_data[
-            FEATURE_COLUMNS
+    split = int(
+        len(training_data)
+        * (
+            1.0
+            - CALIBRATION_FRACTION
+        )
+    )
+
+    split = max(
+        1,
+        min(
+            split,
+            len(training_data) - 1
+        )
+    )
+
+    fit_data = (
+        training_data.iloc[
+            :split
         ]
     )
 
-    classifier = (
-        RandomForestClassifier(
-            n_estimators=500,
-            max_depth=9,
-            min_samples_leaf=10,
-            max_features="sqrt",
-            random_state=42,
-            class_weight="balanced_subsample",
-            n_jobs=-1
-        )
+    calibration_data = (
+        training_data.iloc[
+            split:
+        ]
     )
 
-    regressor = (
-        RandomForestRegressor(
-            n_estimators=450,
-            max_depth=9,
-            min_samples_leaf=10,
-            max_features="sqrt",
-            random_state=43,
-            n_jobs=-1
-        )
-    )
+    classifier = build_classifier()
 
     classifier.fit(
-        X,
-        y_class
+        fit_data[
+            FEATURE_COLUMNS
+        ],
+        fit_data[
+            "target_success"
+        ]
+    )
+
+    calibrator = None
+
+    if (
+        len(calibration_data) >= 50
+        and calibration_data[
+            "target_success"
+        ].nunique() >= 2
+    ):
+
+        raw_probs = (
+            classifier.predict_proba(
+                calibration_data[
+                    FEATURE_COLUMNS
+                ]
+            )[:, 1]
+        )
+
+        calibrator = IsotonicRegression(
+            y_min=0.0,
+            y_max=1.0,
+            out_of_bounds="clip"
+        )
+
+        calibrator.fit(
+            raw_probs,
+            calibration_data[
+                "target_success"
+            ].to_numpy(
+                dtype=float
+            )
+        )
+
+    # Refit classifier on all historical rows after
+    # learning the calibration mapping.
+    classifier = build_classifier()
+
+    classifier.fit(
+        training_data[
+            FEATURE_COLUMNS
+        ],
+        training_data[
+            "target_success"
+        ]
+    )
+
+    regressor = RandomForestRegressor(
+        n_estimators=450,
+        max_depth=9,
+        min_samples_leaf=10,
+        max_features="sqrt",
+        random_state=43,
+        n_jobs=-1
     )
 
     regressor.fit(
-        X,
-        y_return
+        training_data[
+            FEATURE_COLUMNS
+        ],
+        training_data[
+            "target_net_return"
+        ]
     )
 
     return (
         classifier,
+        calibrator,
         regressor
     )
 
 
 def probability_success(
     model,
+    calibrator,
     row
 ):
 
@@ -1052,25 +1194,25 @@ def probability_success(
         .T
     )
 
-    probabilities = (
-        model.predict_proba(X)[0]
+    raw_probability = float(
+        model.predict_proba(
+            X
+        )[0][1]
     )
 
-    mapping = {
-        int(
-            model.classes_[index]
-        ):
-            float(
-                probabilities[index]
-            )
-        for index in range(
-            len(model.classes_)
+    calibrated_probability = (
+        float(
+            calibrator.predict(
+                [raw_probability]
+            )[0]
         )
-    }
+        if calibrator is not None
+        else raw_probability
+    )
 
-    return mapping.get(
-        1,
-        0.0
+    return (
+        raw_probability,
+        calibrated_probability
     )
 
 
@@ -1093,16 +1235,15 @@ def predict_net_return(
 
 
 # =========================================================
-# DYNAMIC SIZE
+# DYNAMIC SIZING
 # =========================================================
 
 def calculate_trade_size(
     probability,
-    predicted_net_return
+    predicted_net_return,
+    atr_pct
 ):
 
-    # Confidence starts contributing above the minimum
-    # threshold and reaches full weight at 85%.
     confidence_span = max(
         0.85 - BUY_THRESHOLD,
         0.01
@@ -1121,7 +1262,6 @@ def calculate_trade_size(
         )
     )
 
-    # Edge score reaches full weight at ~1.5% predicted net.
     edge_score = (
         predicted_net_return
         - MIN_PREDICTED_NET_RETURN
@@ -1139,14 +1279,34 @@ def calculate_trade_size(
         )
     )
 
+    # Lower volatility gets a modest sizing bonus;
+    # high volatility automatically reduces size.
+    volatility_score = (
+        MAX_ATR_PCT
+        - atr_pct
+    ) / max(
+        MAX_ATR_PCT
+        - MIN_ATR_PCT,
+        0.001
+    )
+
+    volatility_score = float(
+        np.clip(
+            volatility_score,
+            0.0,
+            1.0
+        )
+    )
+
     combined_score = (
         confidence_score
-        * (
-            1.0
-            - EDGE_SIZE_WEIGHT
-        )
-        + edge_score
+        * CONFIDENCE_SIZE_WEIGHT
+        +
+        edge_score
         * EDGE_SIZE_WEIGHT
+        +
+        volatility_score
+        * VOLATILITY_SIZE_WEIGHT
     )
 
     size = (
@@ -1158,14 +1318,12 @@ def calculate_trade_size(
         )
     )
 
-    # Keep ordinary valid setups around the base size.
     if (
         probability
         >= BUY_THRESHOLD
         and predicted_net_return
         >= MIN_PREDICTED_NET_RETURN
     ):
-
         size = max(
             size,
             BASE_TRADE_SIZE
@@ -1181,7 +1339,7 @@ def calculate_trade_size(
 
 
 # =========================================================
-# POSITION / PNL
+# POSITION + PNL
 # =========================================================
 
 @dataclass
@@ -1194,11 +1352,15 @@ class Position:
     entry_time: str
     entry_index: int
 
-    entry_probability: float
+    raw_probability: float
+    calibrated_probability: float
     predicted_net_return: float
 
     stop_loss: float
     take_profit: float
+
+    stop_pct: float
+    target_pct: float
 
 
 def calculate_trade_pnl(
@@ -1271,7 +1433,7 @@ def confidence_bucket(
 
 
 # =========================================================
-# SINGLE SYMBOL WALK-FORWARD BACKTEST
+# SINGLE-SYMBOL WALK-FORWARD BACKTEST
 # =========================================================
 
 def run_symbol_backtest(
@@ -1319,7 +1481,6 @@ def run_symbol_backtest(
     )
 
     if len(test) < 40:
-
         raise RuntimeError(
             "Not enough unseen test bars."
         )
@@ -1342,9 +1503,10 @@ def run_symbol_backtest(
     retrain_count = 0
 
     classifier = None
+    calibrator = None
     regressor = None
+
     next_retrain_index = 0
-    current_quality = None
 
     confidence_stats = {
         "64-67": {
@@ -1394,19 +1556,6 @@ def run_symbol_backtest(
             >= next_retrain_index
         ):
 
-            historical = (
-                full_data[
-                    full_data["time"]
-                    < current_time
-                ]
-                .copy()
-                .reset_index(drop=True)
-            )
-
-            if len(historical) < 100:
-                continue
-
-            # Limit model history to the configured window.
             cutoff = (
                 current_time
                 - pd.Timedelta(
@@ -1415,35 +1564,49 @@ def run_symbol_backtest(
             )
 
             historical = (
-                historical[
-                    historical["time"]
-                    >= cutoff
+                full_data[
+                    (
+                        full_data["time"]
+                        < current_time
+                    )
+                    &
+                    (
+                        full_data["time"]
+                        >= cutoff
+                    )
                 ]
+                .copy()
                 .reset_index(drop=True)
             )
 
-            training_data = build_training_data(
-                historical
+            training_data = (
+                build_training_data(
+                    historical
+                )
             )
 
-            current_quality = calculate_symbol_quality(
+            quality = calculate_symbol_quality(
                 training_data
             )
 
-            if not current_quality[
+            if not quality[
                 "passes"
             ]:
 
                 classifier = None
+                calibrator = None
                 regressor = None
+
                 next_retrain_index = (
                     index
                     + RETRAIN_EVERY_BARS
                 )
+
                 continue
 
             (
                 classifier,
+                calibrator,
                 regressor,
             ) = train_models(
                 training_data
@@ -1516,10 +1679,7 @@ def run_symbol_backtest(
                 exit_price = price
                 reason = "MAX HOLD"
 
-            if (
-                exit_price
-                is not None
-            ):
+            if exit_price is not None:
 
                 pnl = calculate_trade_pnl(
                     position.entry_price,
@@ -1527,17 +1687,17 @@ def run_symbol_backtest(
                     position.quantity
                 )
 
-                gross_equity += (
-                    pnl["gross_pnl"]
-                )
+                gross_equity += pnl[
+                    "gross_pnl"
+                ]
 
-                total_costs += (
-                    pnl["fees"]
-                )
+                total_costs += pnl[
+                    "fees"
+                ]
 
-                net_equity += (
-                    pnl["net_pnl"]
-                )
+                net_equity += pnl[
+                    "net_pnl"
+                ]
 
                 fixed_quantity = (
                     BASE_TRADE_SIZE
@@ -1551,11 +1711,13 @@ def run_symbol_backtest(
                 )
 
                 fixed_size_net_equity += (
-                    fixed_pnl["net_pnl"]
+                    fixed_pnl[
+                        "net_pnl"
+                    ]
                 )
 
                 bucket = confidence_bucket(
-                    position.entry_probability
+                    position.calibrated_probability
                 )
 
                 confidence_stats[
@@ -1568,7 +1730,6 @@ def run_symbol_backtest(
                     pnl["net_pnl"]
                     > 0
                 ):
-
                     confidence_stats[
                         bucket
                     ][
@@ -1619,11 +1780,20 @@ def run_symbol_backtest(
                     "reason":
                         reason,
 
+                    "raw_probability":
+                        position.raw_probability,
+
                     "entry_probability":
-                        position.entry_probability,
+                        position.calibrated_probability,
 
                     "predicted_net_return":
                         position.predicted_net_return,
+
+                    "stop_pct":
+                        position.stop_pct,
+
+                    "target_pct":
+                        position.target_pct,
 
                     "entry_time":
                         position.entry_time,
@@ -1649,7 +1819,6 @@ def run_symbol_backtest(
                 index
                 < cooldown_until
             ):
-
                 equity_curve.append(
                     net_equity
                 )
@@ -1658,7 +1827,6 @@ def run_symbol_backtest(
             if not passes_entry_filter(
                 row
             ):
-
                 equity_curve.append(
                     net_equity
                 )
@@ -1666,16 +1834,19 @@ def run_symbol_backtest(
 
             signals_checked += 1
 
-            probability = probability_success(
+            (
+                raw_probability,
+                calibrated_probability,
+            ) = probability_success(
                 classifier,
+                calibrator,
                 row
             )
 
             if (
-                probability
+                calibrated_probability
                 < BUY_THRESHOLD
             ):
-
                 equity_curve.append(
                     net_equity
                 )
@@ -1683,16 +1854,17 @@ def run_symbol_backtest(
 
             classifier_passes += 1
 
-            predicted_net = predict_net_return(
-                regressor,
-                row
+            predicted_net = (
+                predict_net_return(
+                    regressor,
+                    row
+                )
             )
 
             if (
                 predicted_net
                 < MIN_PREDICTED_NET_RETURN
             ):
-
                 equity_curve.append(
                     net_equity
                 )
@@ -1709,7 +1881,6 @@ def run_symbol_backtest(
                     * MIN_COST_EDGE_MULTIPLIER
                 )
             ):
-
                 equity_curve.append(
                     net_equity
                 )
@@ -1717,14 +1888,27 @@ def run_symbol_backtest(
 
             edge_passes += 1
 
-            trade_size = calculate_trade_size(
-                probability,
-                predicted_net
+            atr_pct = float(
+                row["atr_pct"]
+            )
+
+            trade_size = (
+                calculate_trade_size(
+                    calibrated_probability,
+                    predicted_net,
+                    atr_pct
+                )
             )
 
             quantity = (
                 trade_size
                 / price
+            )
+
+            stop_pct, target_pct = (
+                calculate_stop_target_pct(
+                    row
+                )
             )
 
             position = Position(
@@ -1733,22 +1917,31 @@ def run_symbol_backtest(
                 value=trade_size,
                 entry_time=timestamp,
                 entry_index=index,
-                entry_probability=probability,
-                predicted_net_return=predicted_net,
+                raw_probability=(
+                    raw_probability
+                ),
+                calibrated_probability=(
+                    calibrated_probability
+                ),
+                predicted_net_return=(
+                    predicted_net
+                ),
                 stop_loss=(
                     price
                     * (
                         1
-                        - STOP_LOSS_PCT
+                        - stop_pct
                     )
                 ),
                 take_profit=(
                     price
                     * (
                         1
-                        + TAKE_PROFIT_PCT
+                        + target_pct
                     )
                 ),
+                stop_pct=stop_pct,
+                target_pct=target_pct,
             )
 
         equity_curve.append(
@@ -1756,7 +1949,7 @@ def run_symbol_backtest(
         )
 
     # =========================================
-    # CLOSE REMAINING POSITION
+    # CLOSE OPEN POSITION
     # =========================================
 
     if (
@@ -1778,17 +1971,17 @@ def run_symbol_backtest(
             position.quantity
         )
 
-        gross_equity += (
-            pnl["gross_pnl"]
-        )
+        gross_equity += pnl[
+            "gross_pnl"
+        ]
 
-        total_costs += (
-            pnl["fees"]
-        )
+        total_costs += pnl[
+            "fees"
+        ]
 
-        net_equity += (
-            pnl["net_pnl"]
-        )
+        net_equity += pnl[
+            "net_pnl"
+        ]
 
         fixed_quantity = (
             BASE_TRADE_SIZE
@@ -1802,11 +1995,13 @@ def run_symbol_backtest(
         )
 
         fixed_size_net_equity += (
-            fixed_pnl["net_pnl"]
+            fixed_pnl[
+                "net_pnl"
+            ]
         )
 
         bucket = confidence_bucket(
-            position.entry_probability
+            position.calibrated_probability
         )
 
         confidence_stats[
@@ -1819,7 +2014,6 @@ def run_symbol_backtest(
             pnl["net_pnl"]
             > 0
         ):
-
             confidence_stats[
                 bucket
             ][
@@ -1870,11 +2064,20 @@ def run_symbol_backtest(
             "reason":
                 "END OF TEST",
 
+            "raw_probability":
+                position.raw_probability,
+
             "entry_probability":
-                position.entry_probability,
+                position.calibrated_probability,
 
             "predicted_net_return":
                 position.predicted_net_return,
+
+            "stop_pct":
+                position.stop_pct,
+
+            "target_pct":
+                position.target_pct,
 
             "entry_time":
                 position.entry_time,
@@ -1888,10 +2091,6 @@ def run_symbol_backtest(
         equity_curve.append(
             net_equity
         )
-
-    # =========================================
-    # STATS
-    # =========================================
 
     wins = [
         trade["pnl"]
@@ -1913,7 +2112,6 @@ def run_symbol_backtest(
     max_drawdown = 0.0
 
     for value in equity_curve:
-
         peak = max(
             peak,
             value
@@ -2001,15 +2199,6 @@ def run_symbol_backtest(
                 else 0.0
             ),
 
-        "max_trade_size":
-            (
-                max(
-                    trade_sizes
-                )
-                if trade_sizes
-                else 0.0
-            ),
-
         "average_win":
             (
                 sum(wins)
@@ -2052,6 +2241,63 @@ def run_symbol_backtest(
 
 
 # =========================================================
+# PORTFOLIO DRAWDOWN
+# =========================================================
+
+def calculate_portfolio_drawdown(
+    all_trades
+):
+
+    if not all_trades:
+        return 0.0
+
+    events = []
+
+    for trade in all_trades:
+
+        try:
+            exit_time = pd.Timestamp(
+                trade["exit_time"]
+            )
+        except Exception:
+            continue
+
+        events.append(
+            (
+                exit_time,
+                float(
+                    trade["pnl"]
+                )
+            )
+        )
+
+    events.sort(
+        key=lambda item:
+            item[0]
+    )
+
+    equity = 0.0
+    peak = 0.0
+    max_drawdown = 0.0
+
+    for _, pnl in events:
+
+        equity += pnl
+
+        peak = max(
+            peak,
+            equity
+        )
+
+        max_drawdown = min(
+            max_drawdown,
+            equity - peak
+        )
+
+    return max_drawdown
+
+
+# =========================================================
 # COMPLETE BACKTEST
 # =========================================================
 
@@ -2086,9 +2332,17 @@ def run_stock_backtest(
     )
 
     print(
-        f"Dynamic size range: "
-        f"GBP {MIN_TRADE_SIZE:.0f} "
-        f"to GBP {MAX_TRADE_SIZE:.0f}"
+        f"Probability calibration: ON"
+    )
+
+    print(
+        f"ATR-based exits: ON"
+    )
+
+    print(
+        f"Dynamic size: "
+        f"GBP {MIN_TRADE_SIZE:.0f}"
+        f"-{MAX_TRADE_SIZE:.0f}"
     )
 
     benchmark_df = download_intraday(
@@ -2154,14 +2408,13 @@ def run_stock_backtest(
     if not results:
 
         raise RuntimeError(
-            "Stock V3 backtest failed for "
+            "Stock V4 backtest failed for "
             "every configured symbol."
         )
 
     all_trades = []
 
     for item in results:
-
         all_trades.extend(
             item["trade_log"]
         )
@@ -2282,25 +2535,19 @@ def run_stock_backtest(
                 bucket
             ][
                 "trades"
-            ] += (
-                stats["trades"]
-            )
+            ] += stats["trades"]
 
             combined_confidence[
                 bucket
             ][
                 "wins"
-            ] += (
-                stats["wins"]
-            )
+            ] += stats["wins"]
 
             combined_confidence[
                 bucket
             ][
                 "pnl"
-            ] += (
-                stats["pnl"]
-            )
+            ] += stats["pnl"]
 
         for reason, count in (
             item[
@@ -2359,6 +2606,12 @@ def run_stock_backtest(
         )
         if all_trades
         else 0.0
+    )
+
+    portfolio_drawdown = (
+        calculate_portfolio_drawdown(
+            all_trades
+        )
     )
 
     return {
@@ -2495,6 +2748,9 @@ def run_stock_backtest(
             ),
 
         "max_drawdown":
+            portfolio_drawdown,
+
+        "worst_symbol_drawdown":
             min(
                 item[
                     "max_drawdown"
@@ -2519,12 +2775,6 @@ def run_stock_backtest(
 
         "min_predicted_net_return":
             MIN_PREDICTED_NET_RETURN,
-
-        "stop_loss_pct":
-            STOP_LOSS_PCT,
-
-        "take_profit_pct":
-            TAKE_PROFIT_PCT,
 
         "commission_per_side":
             COMMISSION_PER_SIDE,
