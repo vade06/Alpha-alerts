@@ -3265,6 +3265,262 @@ async def ailearning(
         ephemeral=True
     )
     
+    # =========================================================
+# /AIBACKTEST — OWNER ONLY
+# =========================================================
+
+@bot.tree.command(
+    name="aibacktest",
+    description="Backtest your AI trader on historical Coinbase data"
+)
+@app_commands.describe(
+    days="Number of days to test, from 3 to 30"
+)
+async def aibacktest(
+    interaction: discord.Interaction,
+    days: int = 7
+):
+
+    if not is_bot_owner(interaction):
+        await reject_non_owner(interaction)
+        return
+
+    days = max(
+        3,
+        min(
+            int(days),
+            30
+        )
+    )
+
+    await interaction.response.defer(
+        ephemeral=True,
+        thinking=True
+    )
+
+    try:
+
+        result = await asyncio.to_thread(
+            run_backtest,
+            days
+        )
+
+    except Exception as exc:
+
+        print(
+            f"/aibacktest error: {exc}"
+        )
+
+        await interaction.followup.send(
+            (
+                "Backtest failed. "
+                "Check Railway logs for the exact error."
+            ),
+            ephemeral=True
+        )
+
+        return
+
+    trades = int(
+        result.get(
+            "trades",
+            0
+        )
+    )
+
+    wins = int(
+        result.get(
+            "wins",
+            0
+        )
+    )
+
+    losses = int(
+        result.get(
+            "losses",
+            0
+        )
+    )
+
+    win_rate = (
+        float(
+            result.get(
+                "win_rate",
+                0
+            )
+        )
+        * 100
+    )
+
+    pnl = float(
+        result.get(
+            "pnl",
+            0
+        )
+    )
+
+    max_drawdown = float(
+        result.get(
+            "max_drawdown",
+            0
+        )
+    )
+
+    fee_per_side = (
+        float(
+            result.get(
+                "fee_per_side",
+                0
+            )
+        )
+        * 100
+    )
+
+    embed = discord.Embed(
+        title="Alpha AI Backtest",
+        description=(
+            f"Historical Coinbase test over "
+            f"**{result.get('days', days)} days**."
+        ),
+        color=3447003
+    )
+
+    embed.add_field(
+        name="Markets",
+        value=str(
+            result.get(
+                "markets",
+                0
+            )
+        ),
+        inline=True
+    )
+
+    embed.add_field(
+        name="Trades",
+        value=str(
+            trades
+        ),
+        inline=True
+    )
+
+    embed.add_field(
+        name="Record",
+        value=(
+            f"{wins}W / {losses}L"
+        ),
+        inline=True
+    )
+
+    embed.add_field(
+        name="Win Rate",
+        value=(
+            f"{win_rate:.1f}%"
+        ),
+        inline=True
+    )
+
+    embed.add_field(
+        name="Total P&L",
+        value=(
+            f"GBP {pnl:+.2f}"
+        ),
+        inline=True
+    )
+
+    embed.add_field(
+        name="Max Drawdown",
+        value=(
+            f"GBP {max_drawdown:.2f}"
+        ),
+        inline=True
+    )
+
+    embed.add_field(
+        name="Best Market",
+        value=(
+            f"{result.get('best_market', 'N/A')}\n"
+            f"GBP "
+            f"{float(result.get('best_market_pnl', 0)):+.2f}"
+        ),
+        inline=True
+    )
+
+    embed.add_field(
+        name="Worst Market",
+        value=(
+            f"{result.get('worst_market', 'N/A')}\n"
+            f"GBP "
+            f"{float(result.get('worst_market_pnl', 0)):+.2f}"
+        ),
+        inline=True
+    )
+
+    embed.add_field(
+        name="Estimated Fee / Side",
+        value=(
+            f"{fee_per_side:.3f}%"
+        ),
+        inline=True
+    )
+
+    by_market = result.get(
+        "by_market",
+        []
+    )
+
+    market_lines = []
+
+    for market in by_market:
+
+        market_lines.append(
+            (
+                f"**{market['product']}** | "
+                f"{market['trades']} trades | "
+                f"{market['win_rate'] * 100:.1f}% WR | "
+                f"GBP {market['pnl']:+.2f}"
+            )
+        )
+
+    if market_lines:
+
+        embed.add_field(
+            name="By Market",
+            value="\n".join(
+                market_lines
+            ),
+            inline=False
+        )
+
+    errors = result.get(
+        "errors",
+        []
+    )
+
+    if errors:
+
+        error_text = "\n".join(
+            errors[:4]
+        )
+
+        embed.add_field(
+            name="Markets With Errors",
+            value=error_text,
+            inline=False
+        )
+
+    embed.set_footer(
+        text=(
+            "OWNER ONLY | PAPER RESEARCH | "
+            "Historical results do not guarantee future returns"
+        )
+    )
+
+    await interaction.followup.send(
+        embed=embed,
+        ephemeral=True
+    )
+    
 # =========================================================
 # START
 # =========================================================
