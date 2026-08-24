@@ -1,6 +1,6 @@
+import json
 import os
 import time
-import json
 from dataclasses import dataclass
 
 import numpy as np
@@ -8,85 +8,34 @@ import pandas as pd
 import requests
 
 from coinbase.rest import RESTClient
-from sklearn.ensemble import RandomForestClassifier
+
+from sklearn.ensemble import (
+    RandomForestClassifier,
+    RandomForestRegressor,
+)
 
 
 # =========================================================
-# STRATEGY V3 SETTINGS
+# STRATEGY V4
 # =========================================================
 
-STRATEGY_NAME = "V3"
+STRATEGY_NAME = "V4"
 
 GRANULARITY = "FIVE_MINUTE"
+
 CANDLE_SECONDS = 300
 PAGE_SIZE = 300
 
-BUY_THRESHOLD = float(
-    os.getenv("AI_BUY_THRESHOLD", "0.66")
-)
-
-STOP_LOSS_PCT = float(
-    os.getenv("AI_STOP_LOSS_PCT", "0.02")
-)
-
-TAKE_PROFIT_PCT = float(
-    os.getenv("AI_TAKE_PROFIT_PCT", "0.035")
-)
-
-TRADE_SIZE = float(
-    os.getenv("AI_TRADE_SIZE", "25.0")
-)
-
-# 48 x 5-minute candles = 4 hours.
-TARGET_HORIZON_CANDLES = int(
-    os.getenv("AI_TARGET_HORIZON_CANDLES", "48")
-)
-
-MIN_RSI = float(
-    os.getenv("AI_MIN_RSI", "48")
-)
-
-MAX_RSI = float(
-    os.getenv("AI_MAX_RSI", "72")
-)
-
-MIN_VOLUME_RATIO = float(
-    os.getenv("AI_MIN_VOLUME_RATIO", "1.05")
-)
-
-MIN_ATR_PCT = float(
-    os.getenv("AI_MIN_ATR_PCT", "0.003")
-)
-
-MAX_ATR_PCT = float(
-    os.getenv("AI_MAX_ATR_PCT", "0.06")
-)
-
-MIN_DOLLAR_VOLUME_5M = float(
-    os.getenv("AI_MIN_DOLLAR_VOLUME_5M", "25000")
-)
-
-MIN_CLOSE_POSITION = float(
-    os.getenv("AI_MIN_CLOSE_POSITION", "0.50")
-)
-
-COOLDOWN_CANDLES = int(
-    os.getenv("AI_COOLDOWN_CANDLES", "12")
-)
-
-MIN_POSITIVE_TRAINING_EXAMPLES = int(
-    os.getenv("AI_MIN_POSITIVE_TRAINING_EXAMPLES", "5")
-)
-
-ESTIMATED_FEE_PER_SIDE = float(
-    os.getenv("AI_BACKTEST_FEE_PER_SIDE", "0.006")
-)
-
 
 # =========================================================
-# COINBASE / CACHE SETTINGS
+# MARKET UNIVERSE
 # =========================================================
 
+# By default the backtester will test all suitable
+# Coinbase USD markets.
+#
+# If you later want the backtest to match only the six
+# live AI markets, we can add that as a Discord option.
 COINBASE_PRODUCTS_URL = (
     "https://api.exchange.coinbase.com/products"
 )
@@ -101,29 +50,216 @@ IGNORED_BASE_ASSETS = {
     "PYUSD",
 }
 
+
+# =========================================================
+# V4 ENTRY SETTINGS
+# =========================================================
+
+BUY_THRESHOLD = float(
+    os.getenv(
+        "AI_BUY_THRESHOLD",
+        "0.64"
+    )
+)
+
+BEARISH_THRESHOLD = float(
+    os.getenv(
+        "AI_BEARISH_THRESHOLD",
+        "0.36"
+    )
+)
+
+# Model predicts whether price will be at least
+# +1.8% higher approximately one hour later.
+TARGET_RETURN = float(
+    os.getenv(
+        "AI_TARGET_RETURN",
+        "0.018"
+    )
+)
+
+# 12 x 5 minutes = 60 minutes.
+TARGET_CANDLES = int(
+    os.getenv(
+        "AI_TARGET_CANDLES",
+        "12"
+    )
+)
+
+# Estimated net edge required AFTER round-trip costs.
+MIN_EXPECTED_NET_RETURN = float(
+    os.getenv(
+        "AI_MIN_EXPECTED_NET_RETURN",
+        "0.003"
+    )
+)
+
+
+# =========================================================
+# V4 RISK MANAGEMENT
+# =========================================================
+
+STOP_LOSS_PCT = float(
+    os.getenv(
+        "AI_STOP_LOSS_PCT",
+        "0.0125"
+    )
+)
+
+TAKE_PROFIT_PCT = float(
+    os.getenv(
+        "AI_TAKE_PROFIT_PCT",
+        "0.045"
+    )
+)
+
+TRADE_SIZE = float(
+    os.getenv(
+        "AI_TRADE_SIZE",
+        "25.0"
+    )
+)
+
+ESTIMATED_FEE_PER_SIDE = float(
+    os.getenv(
+        "AI_BACKTEST_FEE_PER_SIDE",
+        "0.006"
+    )
+)
+
+ROUND_TRIP_FEE = (
+    ESTIMATED_FEE_PER_SIDE
+    * 2
+)
+
+# 36 x 5 minutes = 3 hours.
+MAX_HOLD_CANDLES = int(
+    os.getenv(
+        "AI_MAX_HOLD_CANDLES",
+        "36"
+    )
+)
+
+SIGNAL_EXIT_PROBABILITY = float(
+    os.getenv(
+        "AI_SIGNAL_EXIT_PROBABILITY",
+        "0.34"
+    )
+)
+
+# Don't immediately re-enter after closing a trade.
+COOLDOWN_CANDLES = int(
+    os.getenv(
+        "AI_COOLDOWN_CANDLES",
+        "6"
+    )
+)
+
+
+# =========================================================
+# TRAINING SETTINGS
+# =========================================================
+
+# The requested backtest period is kept completely unseen.
+#
+# We fetch additional history BEFORE the test period
+# exclusively for model training.
+TRAINING_LOOKBACK_DAYS = int(
+    os.getenv(
+        "AI_TRAINING_LOOKBACK_DAYS",
+        "7"
+    )
+)
+
+MIN_TRAINING_ROWS = int(
+    os.getenv(
+        "AI_MIN_TRAINING_ROWS",
+        "350"
+    )
+)
+
+MIN_POSITIVE_TRAINING_EXAMPLES = int(
+    os.getenv(
+        "AI_MIN_POSITIVE_TRAINING_EXAMPLES",
+        "5"
+    )
+)
+
+
+# =========================================================
+# OPTIONAL MARKET QUALITY FILTERS
+# =========================================================
+
+# These stop the AI taking signals from markets where
+# extremely poor liquidity makes a paper result unrealistic.
+
+MIN_DOLLAR_VOLUME_5M = float(
+    os.getenv(
+        "AI_MIN_DOLLAR_VOLUME_5M",
+        "25000"
+    )
+)
+
+MIN_VOLUME_RATIO = float(
+    os.getenv(
+        "AI_MIN_VOLUME_RATIO",
+        "0.70"
+    )
+)
+
+MIN_ATR_PCT = float(
+    os.getenv(
+        "AI_MIN_ATR_PCT",
+        "0.0015"
+    )
+)
+
+MAX_ATR_PCT = float(
+    os.getenv(
+        "AI_MAX_ATR_PCT",
+        "0.08"
+    )
+)
+
+
+# =========================================================
+# CACHE / COINBASE SETTINGS
+# =========================================================
+
 CACHE_DIR = os.getenv(
     "AI_BACKTEST_CACHE_DIR",
-    "backtest_cache"
+    "backtest_cache_v4"
 )
 
 REQUEST_DELAY_SECONDS = float(
-    os.getenv("AI_BACKTEST_REQUEST_DELAY", "0.35")
+    os.getenv(
+        "AI_BACKTEST_REQUEST_DELAY",
+        "0.35"
+    )
 )
 
 MAX_RETRIES = int(
-    os.getenv("AI_BACKTEST_MAX_RETRIES", "6")
+    os.getenv(
+        "AI_BACKTEST_MAX_RETRIES",
+        "6"
+    )
 )
 
 BACKOFF_START_SECONDS = float(
-    os.getenv("AI_BACKTEST_BACKOFF_START", "2")
+    os.getenv(
+        "AI_BACKTEST_BACKOFF_START",
+        "2"
+    )
 )
 
 
 client = RESTClient()
 
 http = requests.Session()
+
 http.headers.update({
-    "User-Agent": "Alpha-Alerts-Backtest/5.0"
+    "User-Agent":
+        "Alpha-Alerts-Backtest-V4/1.0"
 })
 
 os.makedirs(
@@ -141,18 +277,16 @@ FEATURE_COLUMNS = [
     "return_3",
     "return_6",
     "return_12",
-    "ema_ratio_20_50",
-    "ema_ratio_50_200",
-    "price_vs_ema20",
-    "price_vs_ema50",
-    "price_vs_ema200",
+    "ma_ratio_5_20",
+    "ma_ratio_20_50",
+    "ema_ratio_9_21",
     "volatility_12",
     "volatility_24",
     "volume_ratio",
-    "dollar_volume_ratio",
+    "volume_zscore",
     "rsi",
-    "atr_pct",
     "range_pct",
+    "body_pct",
     "close_position",
 ]
 
@@ -171,18 +305,30 @@ def get_all_coinbase_usd_markets():
     response.raise_for_status()
 
     products = response.json()
+
     markets = []
 
     for product in products:
 
-        if product.get("status") != "online":
+        if (
+            product.get("status")
+            != "online"
+        ):
             continue
 
-        if product.get("quote_currency") != "USD":
+        if (
+            product.get("quote_currency")
+            != "USD"
+        ):
             continue
 
-        product_id = product.get("id")
-        base = product.get("base_currency")
+        product_id = product.get(
+            "id"
+        )
+
+        base = product.get(
+            "base_currency"
+        )
 
         if not product_id or not base:
             continue
@@ -190,46 +336,80 @@ def get_all_coinbase_usd_markets():
         if base in IGNORED_BASE_ASSETS:
             continue
 
-        if not product_id.endswith("-USD"):
+        if not product_id.endswith(
+            "-USD"
+        ):
             continue
 
-        markets.append(product_id)
+        markets.append(
+            product_id
+        )
 
-    return sorted(set(markets))
+    return sorted(
+        set(markets)
+    )
 
 
 # =========================================================
 # CACHE
 # =========================================================
 
-def cache_path(product_id, days):
+def cache_path(
+    product_id,
+    requested_days
+):
 
-    safe = product_id.replace("/", "_")
+    safe = (
+        product_id
+        .replace(
+            "/",
+            "_"
+        )
+        .replace(
+            "-",
+            "_"
+        )
+    )
+
+    total_days = (
+        requested_days
+        + TRAINING_LOOKBACK_DAYS
+    )
 
     return os.path.join(
         CACHE_DIR,
-        f"{safe}_{days}d.json"
+        (
+            f"{safe}_"
+            f"{total_days}d_v4.json"
+        )
     )
 
 
-def load_cache(product_id, days):
+def load_cache(
+    product_id,
+    requested_days
+):
 
     path = cache_path(
         product_id,
-        days
+        requested_days
     )
 
-    if not os.path.exists(path):
+    if not os.path.exists(
+        path
+    ):
         return None
 
     try:
 
         age = (
             time.time()
-            - os.path.getmtime(path)
+            - os.path.getmtime(
+                path
+            )
         )
 
-        # Reuse data for up to six hours.
+        # Historical data can be reused for six hours.
         if age > 6 * 60 * 60:
             return None
 
@@ -238,22 +418,31 @@ def load_cache(product_id, days):
             "r",
             encoding="utf-8"
         ) as f:
-            rows = json.load(f)
+
+            rows = json.load(
+                f
+            )
 
         if not rows:
             return None
 
-        return pd.DataFrame(rows)
+        return pd.DataFrame(
+            rows
+        )
 
     except Exception:
         return None
 
 
-def save_cache(product_id, days, df):
+def save_cache(
+    product_id,
+    requested_days,
+    df
+):
 
     path = cache_path(
         product_id,
-        days
+        requested_days
     )
 
     rows = df.to_dict(
@@ -265,11 +454,15 @@ def save_cache(product_id, days, df):
         "w",
         encoding="utf-8"
     ) as f:
-        json.dump(rows, f)
+
+        json.dump(
+            rows,
+            f
+        )
 
 
 # =========================================================
-# RATE-LIMIT-SAFE COINBASE CALL
+# RATE-LIMIT-SAFE COINBASE REQUEST
 # =========================================================
 
 def get_candle_page(
@@ -278,7 +471,10 @@ def get_candle_page(
     end
 ):
 
-    delay = BACKOFF_START_SECONDS
+    delay = (
+        BACKOFF_START_SECONDS
+    )
+
     last_error = None
 
     for attempt in range(
@@ -287,12 +483,18 @@ def get_candle_page(
 
         try:
 
-            response = client.get_public_candles(
-                product_id=product_id,
-                start=str(start),
-                end=str(end),
-                granularity=GRANULARITY,
-                limit=PAGE_SIZE
+            response = (
+                client.get_public_candles(
+                    product_id=product_id,
+                    start=str(
+                        int(start)
+                    ),
+                    end=str(
+                        int(end)
+                    ),
+                    granularity=GRANULARITY,
+                    limit=PAGE_SIZE
+                )
             )
 
             time.sleep(
@@ -304,20 +506,31 @@ def get_candle_page(
         except Exception as exc:
 
             last_error = exc
-            text = str(exc)
+
+            text = str(
+                exc
+            )
 
             if (
                 "429" in text
-                or "Too Many Requests" in text
+                or
+                "Too Many Requests"
+                in text
             ):
 
                 print(
-                    f"RATE LIMIT {product_id}: "
-                    f"waiting {delay:.0f}s "
-                    f"(attempt {attempt + 1}/{MAX_RETRIES})"
+                    f"RATE LIMIT "
+                    f"{product_id}: "
+                    f"waiting "
+                    f"{delay:.0f}s "
+                    f"(attempt "
+                    f"{attempt + 1}/"
+                    f"{MAX_RETRIES})"
                 )
 
-                time.sleep(delay)
+                time.sleep(
+                    delay
+                )
 
                 delay = min(
                     delay * 2,
@@ -329,18 +542,22 @@ def get_candle_page(
             raise
 
     raise RuntimeError(
-        f"Coinbase rate limit persisted "
-        f"for {product_id}: {last_error}"
+        (
+            "Coinbase rate limit "
+            f"persisted for "
+            f"{product_id}: "
+            f"{last_error}"
+        )
     )
 
 
 # =========================================================
-# HISTORICAL CANDLES
+# HISTORICAL DATA
 # =========================================================
 
 def get_historical_candles(
     product_id,
-    days=7
+    days
 ):
 
     cached = load_cache(
@@ -351,17 +568,25 @@ def get_historical_candles(
     if cached is not None:
 
         print(
-            f"CACHE HIT: {product_id}"
+            f"CACHE HIT: "
+            f"{product_id}"
         )
 
         return cached
 
-    end_time = int(time.time())
+    end_time = int(
+        time.time()
+    )
+
+    total_days = (
+        days
+        + TRAINING_LOOKBACK_DAYS
+    )
 
     start_time = (
         end_time
-        - int(
-            days
+        - (
+            total_days
             * 24
             * 60
             * 60
@@ -369,32 +594,59 @@ def get_historical_candles(
     )
 
     rows = []
-    cursor = start_time
+
+    cursor = (
+        start_time
+    )
 
     while cursor < end_time:
 
         page_end = min(
             cursor
-            + PAGE_SIZE
-            * CANDLE_SECONDS,
+            + (
+                PAGE_SIZE
+                * CANDLE_SECONDS
+            ),
             end_time
         )
 
-        response = get_candle_page(
-            product_id,
-            cursor,
-            page_end
+        response = (
+            get_candle_page(
+                product_id,
+                cursor,
+                page_end
+            )
         )
 
-        for candle in response.candles:
+        for candle in (
+            response.candles
+        ):
 
             rows.append({
-                "time": int(candle.start),
-                "open": float(candle.open),
-                "high": float(candle.high),
-                "low": float(candle.low),
-                "close": float(candle.close),
-                "volume": float(candle.volume),
+                "time":
+                    int(
+                        candle.start
+                    ),
+                "open":
+                    float(
+                        candle.open
+                    ),
+                "high":
+                    float(
+                        candle.high
+                    ),
+                "low":
+                    float(
+                        candle.low
+                    ),
+                "close":
+                    float(
+                        candle.close
+                    ),
+                "volume":
+                    float(
+                        candle.volume
+                    ),
             })
 
         cursor = (
@@ -405,17 +657,26 @@ def get_historical_candles(
     if not rows:
 
         raise RuntimeError(
-            f"No historical candles returned "
-            f"for {product_id}"
+            (
+                "No historical candles "
+                f"returned for "
+                f"{product_id}"
+            )
         )
 
     df = (
-        pd.DataFrame(rows)
-        .sort_values("time")
+        pd.DataFrame(
+            rows
+        )
+        .sort_values(
+            "time"
+        )
         .drop_duplicates(
             subset=["time"]
         )
-        .reset_index(drop=True)
+        .reset_index(
+            drop=True
+        )
     )
 
     save_cache(
@@ -428,7 +689,7 @@ def get_historical_candles(
 
 
 # =========================================================
-# INDICATORS
+# RSI
 # =========================================================
 
 def calculate_rsi(
@@ -436,25 +697,37 @@ def calculate_rsi(
     period=14
 ):
 
-    delta = series.diff()
-
-    gain = delta.clip(
-        lower=0
+    delta = (
+        series.diff()
     )
 
-    loss = -delta.clip(
-        upper=0
+    gain = (
+        delta.clip(
+            lower=0
+        )
     )
 
-    avg_gain = gain.ewm(
-        alpha=1 / period,
-        adjust=False
-    ).mean()
+    loss = (
+        -delta.clip(
+            upper=0
+        )
+    )
 
-    avg_loss = loss.ewm(
-        alpha=1 / period,
-        adjust=False
-    ).mean()
+    avg_gain = (
+        gain
+        .rolling(
+            period
+        )
+        .mean()
+    )
+
+    avg_loss = (
+        loss
+        .rolling(
+            period
+        )
+        .mean()
+    )
 
     rs = (
         avg_gain
@@ -469,13 +742,20 @@ def calculate_rsi(
         - (
             100
             / (
-                1 + rs
+                1
+                + rs
             )
         )
     )
 
-    return rsi.fillna(50)
+    return rsi.fillna(
+        50
+    )
 
+
+# =========================================================
+# ATR
+# =========================================================
 
 def calculate_atr(
     data,
@@ -492,135 +772,52 @@ def calculate_atr(
         - data["low"]
     )
 
-    high_close = (
+    high_previous = (
         data["high"]
         - previous_close
     ).abs()
 
-    low_close = (
+    low_previous = (
         data["low"]
         - previous_close
     ).abs()
 
-    true_range = pd.concat(
-        [
-            high_low,
-            high_close,
-            low_close,
-        ],
-        axis=1
-    ).max(axis=1)
-
-    return true_range.ewm(
-        alpha=1 / period,
-        adjust=False
-    ).mean()
-
-
-# =========================================================
-# TARGET
-#
-# 1 = +3.5% target is reached before -2% stop
-#     during the next 4 hours.
-#
-# 0 = stop is reached first OR the target is not reached
-#     within the four-hour horizon.
-#
-# If both stop and target occur inside the same 5-minute
-# candle, the backtest assumes the stop happened first.
-# =========================================================
-
-def create_trade_target(data):
-
-    total = len(data)
-
-    highs = data["high"].to_numpy(
-        dtype=float
-    )
-
-    lows = data["low"].to_numpy(
-        dtype=float
-    )
-
-    closes = data["close"].to_numpy(
-        dtype=float
-    )
-
-    targets = np.full(
-        total,
-        np.nan
-    )
-
-    for index in range(total):
-
-        future_end = (
-            index
-            + TARGET_HORIZON_CANDLES
+    true_range = (
+        pd.concat(
+            [
+                high_low,
+                high_previous,
+                low_previous,
+            ],
+            axis=1
         )
-
-        if future_end >= total:
-            continue
-
-        entry = closes[index]
-
-        stop = (
-            entry
-            * (
-                1
-                - STOP_LOSS_PCT
-            )
+        .max(
+            axis=1
         )
+    )
 
-        target = (
-            entry
-            * (
-                1
-                + TAKE_PROFIT_PCT
-            )
+    return (
+        true_range
+        .rolling(
+            period
         )
-
-        outcome = 0
-
-        for future_index in range(
-            index + 1,
-            future_end + 1
-        ):
-
-            stop_hit = (
-                lows[future_index]
-                <= stop
-            )
-
-            target_hit = (
-                highs[future_index]
-                >= target
-            )
-
-            # Conservative ordering.
-            if stop_hit:
-                outcome = 0
-                break
-
-            if target_hit:
-                outcome = 1
-                break
-
-        targets[index] = outcome
-
-    return targets
+        .mean()
+    )
 
 
 # =========================================================
-# FEATURE BUILDING
+# FEATURE FRAME
 # =========================================================
 
-def build_features(df):
+def build_feature_frame(
+    df
+):
 
     data = df.copy()
 
     data["return_1"] = (
         data["close"]
-        .pct_change(1)
+        .pct_change()
     )
 
     data["return_3"] = (
@@ -638,56 +835,55 @@ def build_features(df):
         .pct_change(12)
     )
 
-    data["ema_20"] = (
+    data["ma_5"] = (
+        data["close"]
+        .rolling(5)
+        .mean()
+    )
+
+    data["ma_20"] = (
+        data["close"]
+        .rolling(20)
+        .mean()
+    )
+
+    data["ma_50"] = (
+        data["close"]
+        .rolling(50)
+        .mean()
+    )
+
+    data["ma_ratio_5_20"] = (
+        data["ma_5"]
+        / data["ma_20"]
+    )
+
+    data["ma_ratio_20_50"] = (
+        data["ma_20"]
+        / data["ma_50"]
+    )
+
+    data["ema_9"] = (
         data["close"]
         .ewm(
-            span=20,
+            span=9,
             adjust=False
         )
         .mean()
     )
 
-    data["ema_50"] = (
+    data["ema_21"] = (
         data["close"]
         .ewm(
-            span=50,
+            span=21,
             adjust=False
         )
         .mean()
     )
 
-    data["ema_200"] = (
-        data["close"]
-        .ewm(
-            span=200,
-            adjust=False
-        )
-        .mean()
-    )
-
-    data["ema_ratio_20_50"] = (
-        data["ema_20"]
-        / data["ema_50"]
-    )
-
-    data["ema_ratio_50_200"] = (
-        data["ema_50"]
-        / data["ema_200"]
-    )
-
-    data["price_vs_ema20"] = (
-        data["close"]
-        / data["ema_20"]
-    )
-
-    data["price_vs_ema50"] = (
-        data["close"]
-        / data["ema_50"]
-    )
-
-    data["price_vs_ema200"] = (
-        data["close"]
-        / data["ema_200"]
+    data["ema_ratio_9_21"] = (
+        data["ema_9"]
+        / data["ema_21"]
     )
 
     data["volatility_12"] = (
@@ -708,14 +904,96 @@ def build_features(df):
         .mean()
     )
 
+    data["volume_std_20"] = (
+        data["volume"]
+        .rolling(20)
+        .std()
+    )
+
     data["volume_ratio"] = (
         data["volume"]
-        / data["volume_ma_20"]
+        / data[
+            "volume_ma_20"
+        ].replace(
+            0,
+            np.nan
+        )
+    )
+
+    data["volume_zscore"] = (
+        (
+            data["volume"]
+            - data["volume_ma_20"]
+        )
+        / data[
+            "volume_std_20"
+        ].replace(
+            0,
+            np.nan
+        )
+    )
+
+    data["rsi"] = (
+        calculate_rsi(
+            data["close"]
+        )
+    )
+
+    data["atr"] = (
+        calculate_atr(
+            data
+        )
+    )
+
+    data["atr_pct"] = (
+        data["atr"]
+        / data["close"]
+        .replace(
+            0,
+            np.nan
+        )
+    )
+
+    candle_range = (
+        data["high"]
+        - data["low"]
+    )
+
+    data["range_pct"] = (
+        candle_range
+        / data["close"]
+        .replace(
+            0,
+            np.nan
+        )
+    )
+
+    data["body_pct"] = (
+        (
+            data["close"]
+            - data["open"]
+        )
+        / data["open"]
+        .replace(
+            0,
+            np.nan
+        )
+    )
+
+    data["close_position"] = (
+        (
+            data["close"]
+            - data["low"]
+        )
+        / candle_range.replace(
+            0,
+            np.nan
+        )
     )
 
     data["dollar_volume"] = (
-        data["volume"]
-        * data["close"]
+        data["close"]
+        * data["volume"]
     )
 
     data["dollar_volume_ma20"] = (
@@ -724,62 +1002,85 @@ def build_features(df):
         .mean()
     )
 
-    data["dollar_volume_ma50"] = (
-        data["dollar_volume"]
-        .rolling(50)
-        .mean()
+    data.replace(
+        [
+            np.inf,
+            -np.inf
+        ],
+        np.nan,
+        inplace=True
     )
 
-    data["dollar_volume_ratio"] = (
-        data["dollar_volume_ma20"]
-        / data[
-            "dollar_volume_ma50"
-        ].replace(
-            0,
-            np.nan
+    return data
+
+
+# =========================================================
+# TRAINING LABEL
+# =========================================================
+
+def build_training_data(
+    df
+):
+
+    data = (
+        build_feature_frame(
+            df
         )
     )
 
-    data["rsi"] = calculate_rsi(
+    future_price = (
         data["close"]
-    )
-
-    data["atr"] = calculate_atr(
-        data
-    )
-
-    data["atr_pct"] = (
-        data["atr"]
-        / data["close"]
-    )
-
-    data["range_pct"] = (
-        (
-            data["high"]
-            - data["low"]
+        .shift(
+            -TARGET_CANDLES
         )
-        / data["close"]
     )
 
-    candle_range = (
-        data["high"]
-        - data["low"]
-    ).replace(
-        0,
+    data["future_return"] = (
+        (
+            future_price
+            / data["close"]
+        )
+        - 1
+    )
+
+    # Crucially, unknown future results remain NaN.
+    data["target"] = np.where(
+        data[
+            "future_return"
+        ].notna(),
+        (
+            data[
+                "future_return"
+            ]
+            >= TARGET_RETURN
+        ).astype(
+            float
+        ),
         np.nan
     )
 
-    data["close_position"] = (
-        (
-            data["close"]
-            - data["low"]
+    required = (
+        FEATURE_COLUMNS
+        + [
+            "future_return",
+            "target",
+        ]
+    )
+
+    data = (
+        data
+        .dropna(
+            subset=required
         )
-        / candle_range
+        .reset_index(
+            drop=True
+        )
     )
 
     data["target"] = (
-        create_trade_target(
-            data
+        data["target"]
+        .astype(
+            int
         )
     )
 
@@ -787,30 +1088,60 @@ def build_features(df):
 
 
 # =========================================================
-# MODEL
+# MODEL TRAINING
 # =========================================================
 
-def train_model(train):
+def train_models(
+    training_data
+):
 
-    X_train = train[
-        FEATURE_COLUMNS
-    ]
-
-    y_train = (
-        train["target"]
-        .astype(int)
-    )
-
-    if y_train.nunique() < 2:
+    if (
+        len(training_data)
+        < MIN_TRAINING_ROWS
+    ):
 
         raise RuntimeError(
-            "Training sample contains "
-            "only one target class."
+            (
+                "Not enough training "
+                f"history: "
+                f"{len(training_data)} rows"
+            )
+        )
+
+    X_train = (
+        training_data[
+            FEATURE_COLUMNS
+        ]
+    )
+
+    y_class = (
+        training_data[
+            "target"
+        ]
+    )
+
+    y_return = (
+        training_data[
+            "future_return"
+        ]
+    )
+
+    if (
+        y_class.nunique()
+        < 2
+    ):
+
+        raise RuntimeError(
+            (
+                "Training sample "
+                "contains only one "
+                "target class."
+            )
         )
 
     positive_count = int(
         (
-            y_train == 1
+            y_class == 1
         ).sum()
     )
 
@@ -820,27 +1151,52 @@ def train_model(train):
     ):
 
         raise RuntimeError(
-            "Not enough successful "
-            "historical setups."
+            (
+                "Not enough successful "
+                "historical setups."
+            )
         )
 
-    model = RandomForestClassifier(
-        n_estimators=250,
-        max_depth=8,
-        min_samples_leaf=8,
-        max_features="sqrt",
-        random_state=42,
-        class_weight="balanced_subsample",
-        n_jobs=1
+    classifier = (
+        RandomForestClassifier(
+            n_estimators=450,
+            max_depth=8,
+            min_samples_leaf=6,
+            random_state=42,
+            class_weight="balanced",
+            n_jobs=-1,
+        )
     )
 
-    model.fit(
+    regressor = (
+        RandomForestRegressor(
+            n_estimators=400,
+            max_depth=8,
+            min_samples_leaf=6,
+            random_state=42,
+            n_jobs=-1,
+        )
+    )
+
+    classifier.fit(
         X_train,
-        y_train
+        y_class
     )
 
-    return model
+    regressor.fit(
+        X_train,
+        y_return
+    )
 
+    return (
+        classifier,
+        regressor
+    )
+
+
+# =========================================================
+# MODEL PREDICTIONS
+# =========================================================
 
 def probability_up(
     model,
@@ -856,14 +1212,26 @@ def probability_up(
     )
 
     probabilities = (
-        model.predict_proba(X)[0]
+        model.predict_proba(
+            X
+        )[0]
     )
 
     mapping = {
-        int(model.classes_[index]):
-            float(probabilities[index])
+        int(
+            model.classes_[
+                index
+            ]
+        ):
+        float(
+            probabilities[
+                index
+            ]
+        )
         for index in range(
-            len(model.classes_)
+            len(
+                model.classes_
+            )
         )
     }
 
@@ -873,82 +1241,61 @@ def probability_up(
     )
 
 
+def predict_return(
+    model,
+    row
+):
+
+    X = (
+        row[
+            FEATURE_COLUMNS
+        ]
+        .to_frame()
+        .T
+    )
+
+    return float(
+        model.predict(
+            X
+        )[0]
+    )
+
+
 # =========================================================
-# ENTRY FILTER
+# BASIC LIQUIDITY FILTER
 # =========================================================
 
-def passes_entry_filters(row):
+def passes_market_filter(
+    row
+):
 
-    price = float(
-        row["close"]
-    )
-
-    ema20 = float(
-        row["ema_20"]
-    )
-
-    ema50 = float(
-        row["ema_50"]
-    )
-
-    ema200 = float(
-        row["ema_200"]
-    )
-
-    rsi = float(
-        row["rsi"]
+    dollar_volume = float(
+        row[
+            "dollar_volume_ma20"
+        ]
     )
 
     volume_ratio = float(
-        row["volume_ratio"]
+        row[
+            "volume_ratio"
+        ]
     )
 
     atr_pct = float(
-        row["atr_pct"]
+        row[
+            "atr_pct"
+        ]
     )
 
-    dollar_volume = float(
-        row["dollar_volume_ma20"]
-    )
-
-    close_position = float(
-        row["close_position"]
-    )
-
-    return_6 = float(
-        row["return_6"]
-    )
-
-    return_12 = float(
-        row["return_12"]
-    )
-
-    # Overall trend remains bullish, but we allow
-    # a short-term pullback rather than requiring
-    # price > EMA20 at every entry.
-    if not (
-        price > ema50
-        and ema20 > ema50
-        and price > ema200
-    ):
-        return False
-
-    if not (
-        MIN_RSI
-        <= rsi
-        <= MAX_RSI
+    if (
+        dollar_volume
+        < MIN_DOLLAR_VOLUME_5M
     ):
         return False
 
     if (
         volume_ratio
         < MIN_VOLUME_RATIO
-    ):
-        return False
-
-    if (
-        dollar_volume
-        < MIN_DOLLAR_VOLUME_5M
     ):
         return False
 
@@ -964,21 +1311,6 @@ def passes_entry_filters(row):
     ):
         return False
 
-    # Require useful positive momentum over 30 minutes.
-    if return_6 <= 0:
-        return False
-
-    # 60-minute momentum may be slightly negative during
-    # a pullback, but not heavily negative.
-    if return_12 <= -0.005:
-        return False
-
-    if (
-        close_position
-        < MIN_CLOSE_POSITION
-    ):
-        return False
-
     return True
 
 
@@ -988,11 +1320,23 @@ def passes_entry_filters(row):
 
 @dataclass
 class Position:
+
     entry_price: float
+
     quantity: float
+
     entry_time: int
+
+    entry_index: int
+
     entry_probability: float
+
+    expected_return: float
+
+    expected_net_return: float
+
     stop_loss: float
+
     take_profit: float
 
 
@@ -1042,16 +1386,25 @@ def calculate_trade_pnl(
     )
 
     return {
-        "gross_pnl": gross_pnl,
-        "entry_fee": entry_fee,
-        "exit_fee": exit_fee,
-        "fees": total_fees,
-        "net_pnl": net_pnl,
+        "gross_pnl":
+            gross_pnl,
+
+        "entry_fee":
+            entry_fee,
+
+        "exit_fee":
+            exit_fee,
+
+        "fees":
+            total_fees,
+
+        "net_pnl":
+            net_pnl,
     }
 
 
 # =========================================================
-# SINGLE-MARKET BACKTEST
+# SINGLE MARKET BACKTEST
 # =========================================================
 
 def run_product_backtest(
@@ -1059,64 +1412,79 @@ def run_product_backtest(
     days=7
 ):
 
-    raw = get_historical_candles(
-        product_id,
-        days=days
+    raw = (
+        get_historical_candles(
+            product_id,
+            days
+        )
     )
 
-    data = build_features(raw)
+    feature_data = (
+        build_feature_frame(
+            raw
+        )
+    )
 
-    labelled = (
-        data.dropna(
+    # -----------------------------------------------------
+    # DEFINE TRUE TEST WINDOW
+    # -----------------------------------------------------
+
+    test_start_time = (
+        int(
+            time.time()
+        )
+        - (
+            days
+            * 24
+            * 60
+            * 60
+        )
+    )
+
+    # Anything before this timestamp is training history.
+    raw_training = (
+        raw[
+            raw["time"]
+            < test_start_time
+        ]
+        .copy()
+        .reset_index(
+            drop=True
+        )
+    )
+
+    training_data = (
+        build_training_data(
+            raw_training
+        )
+    )
+
+    classifier, regressor = (
+        train_models(
+            training_data
+        )
+    )
+
+    # Test data gets indicator history from the complete
+    # dataframe, but its rows occur strictly AFTER the
+    # training period.
+    test = (
+        feature_data[
+            feature_data["time"]
+            >= test_start_time
+        ]
+        .dropna(
             subset=(
                 FEATURE_COLUMNS
                 + [
-                    "target",
-                    "ema_200",
                     "atr_pct",
                     "dollar_volume_ma20",
                 ]
             )
         )
-        .reset_index(drop=True)
-    )
-
-    if len(labelled) < 350:
-
-        raise RuntimeError(
-            "Not enough usable history"
+        .reset_index(
+            drop=True
         )
-
-    split = int(
-        len(labelled)
-        * 0.70
-    )
-
-    # Purge the target horizon from training so labels near
-    # the split cannot use future candles from the test set.
-    train_end = (
-        split
-        - TARGET_HORIZON_CANDLES
-    )
-
-    if train_end <= 100:
-
-        raise RuntimeError(
-            "Not enough training history"
-        )
-
-    train = (
-        labelled.iloc[
-            :train_end
-        ]
-        .copy()
-    )
-
-    test = (
-        labelled.iloc[
-            split:
-        ]
-        .reset_index(drop=True)
     )
 
     if len(test) < 60:
@@ -1125,20 +1493,26 @@ def run_product_backtest(
             "Not enough unseen test candles"
         )
 
-    model = train_model(train)
-
     position = None
+
     trades = []
 
     net_equity = 0.0
     gross_equity = 0.0
     total_fees = 0.0
 
-    equity_curve = [0.0]
+    equity_curve = [
+        0.0
+    ]
 
-    cooldown_until_index = -1
+    cooldown_until = -1
 
-    for index, row in test.iterrows():
+    signals_checked = 0
+    buy_signals = 0
+
+    for index, row in (
+        test.iterrows()
+    ):
 
         price = float(
             row["close"]
@@ -1156,8 +1530,11 @@ def run_product_backtest(
             row["time"]
         )
 
+        current_probability = None
+        current_expected_return = None
+
         # -------------------------------------------------
-        # MANAGE OPEN POSITION
+        # MANAGE OPEN TRADE
         # -------------------------------------------------
 
         if position is not None:
@@ -1175,14 +1552,17 @@ def run_product_backtest(
             exit_price = None
             reason = None
 
-            # Conservative same-candle ordering.
+            # Conservative assumption if both are hit
+            # in the same five-minute candle.
             if stop_hit:
 
                 exit_price = (
                     position.stop_loss
                 )
 
-                reason = "STOP LOSS"
+                reason = (
+                    "STOP LOSS"
+                )
 
             elif target_hit:
 
@@ -1190,9 +1570,54 @@ def run_product_backtest(
                     position.take_profit
                 )
 
-                reason = "TAKE PROFIT"
+                reason = (
+                    "TAKE PROFIT"
+                )
 
-            if exit_price is not None:
+            else:
+
+                held_candles = (
+                    index
+                    - position.entry_index
+                )
+
+                if (
+                    held_candles
+                    >= MAX_HOLD_CANDLES
+                ):
+
+                    exit_price = price
+
+                    reason = (
+                        "MAX HOLD TIME"
+                    )
+
+                elif (
+                    held_candles >= 4
+                ):
+
+                    current_probability = (
+                        probability_up(
+                            classifier,
+                            row
+                        )
+                    )
+
+                    if (
+                        current_probability
+                        <= SIGNAL_EXIT_PROBABILITY
+                    ):
+
+                        exit_price = price
+
+                        reason = (
+                            "AI SIGNAL REVERSAL"
+                        )
+
+            if (
+                exit_price
+                is not None
+            ):
 
                 pnl_result = (
                     calculate_trade_pnl(
@@ -1221,49 +1646,65 @@ def run_product_backtest(
                 )
 
                 trades.append({
-                    "product": product_id,
+                    "product":
+                        product_id,
+
                     "entry_price":
                         position.entry_price,
+
                     "exit_price":
                         exit_price,
+
                     "gross_pnl":
                         pnl_result[
                             "gross_pnl"
                         ],
+
                     "fees":
                         pnl_result[
                             "fees"
                         ],
+
                     "pnl":
                         pnl_result[
                             "net_pnl"
                         ],
+
                     "reason":
                         reason,
+
                     "entry_probability":
                         position.entry_probability,
+
+                    "expected_return":
+                        position.expected_return,
+
+                    "expected_net_return":
+                        position.expected_net_return,
+
                     "entry_time":
                         position.entry_time,
+
                     "exit_time":
                         timestamp,
                 })
 
                 position = None
 
-                cooldown_until_index = (
+                cooldown_until = (
                     index
                     + COOLDOWN_CANDLES
                 )
 
         # -------------------------------------------------
-        # LOOK FOR ENTRY
+        # LOOK FOR A NEW ENTRY
         # -------------------------------------------------
 
         if position is None:
 
             if (
                 index
-                < cooldown_until_index
+                < cooldown_until
             ):
 
                 equity_curve.append(
@@ -1272,7 +1713,7 @@ def run_product_backtest(
 
                 continue
 
-            if not passes_entry_filters(
+            if not passes_market_filter(
                 row
             ):
 
@@ -1282,17 +1723,41 @@ def run_product_backtest(
 
                 continue
 
-            up_probability = (
-                probability_up(
-                    model,
+            signals_checked += 1
+
+            if (
+                current_probability
+                is None
+            ):
+
+                current_probability = (
+                    probability_up(
+                        classifier,
+                        row
+                    )
+                )
+
+            current_expected_return = (
+                predict_return(
+                    regressor,
                     row
                 )
             )
 
+            expected_net_return = (
+                current_expected_return
+                - ROUND_TRIP_FEE
+            )
+
             if (
-                up_probability
+                current_probability
                 >= BUY_THRESHOLD
+                and
+                expected_net_return
+                >= MIN_EXPECTED_NET_RETURN
             ):
+
+                buy_signals += 1
 
                 quantity = (
                     TRADE_SIZE
@@ -1301,11 +1766,25 @@ def run_product_backtest(
 
                 position = Position(
                     entry_price=price,
+
                     quantity=quantity,
+
                     entry_time=timestamp,
+
+                    entry_index=index,
+
                     entry_probability=(
-                        up_probability
+                        current_probability
                     ),
+
+                    expected_return=(
+                        current_expected_return
+                    ),
+
+                    expected_net_return=(
+                        expected_net_return
+                    ),
+
                     stop_loss=(
                         price
                         * (
@@ -1313,6 +1792,7 @@ def run_product_backtest(
                             - STOP_LOSS_PCT
                         )
                     ),
+
                     take_profit=(
                         price
                         * (
@@ -1326,19 +1806,25 @@ def run_product_backtest(
             net_equity
         )
 
-    # -----------------------------------------------------
-    # CLOSE ANY POSITION AT TEST END
-    # -----------------------------------------------------
+    # =====================================================
+    # CLOSE REMAINING TRADE
+    # =====================================================
 
     if (
         position is not None
         and len(test) > 0
     ):
 
-        final_row = test.iloc[-1]
+        final_row = (
+            test.iloc[
+                -1
+            ]
+        )
 
         exit_price = float(
-            final_row["close"]
+            final_row[
+                "close"
+            ]
         )
 
         pnl_result = (
@@ -1368,32 +1854,50 @@ def run_product_backtest(
         )
 
         trades.append({
-            "product": product_id,
+            "product":
+                product_id,
+
             "entry_price":
                 position.entry_price,
+
             "exit_price":
                 exit_price,
+
             "gross_pnl":
                 pnl_result[
                     "gross_pnl"
                 ],
+
             "fees":
                 pnl_result[
                     "fees"
                 ],
+
             "pnl":
                 pnl_result[
                     "net_pnl"
                 ],
+
             "reason":
                 "END OF TEST",
+
             "entry_probability":
                 position.entry_probability,
+
+            "expected_return":
+                position.expected_return,
+
+            "expected_net_return":
+                position.expected_net_return,
+
             "entry_time":
                 position.entry_time,
+
             "exit_time":
                 int(
-                    final_row["time"]
+                    final_row[
+                        "time"
+                    ]
                 ),
         })
 
@@ -1401,21 +1905,33 @@ def run_product_backtest(
             net_equity
         )
 
-    wins_list = [
+    # =====================================================
+    # RESULTS
+    # =====================================================
+
+    winning_trades = [
         trade["pnl"]
         for trade in trades
         if trade["pnl"] > 0
     ]
 
-    losses_list = [
+    losing_trades = [
         trade["pnl"]
         for trade in trades
         if trade["pnl"] <= 0
     ]
 
-    wins = len(wins_list)
-    losses = len(losses_list)
-    total_trades = len(trades)
+    wins = len(
+        winning_trades
+    )
+
+    losses = len(
+        losing_trades
+    )
+
+    total_trades = len(
+        trades
+    )
 
     win_rate = (
         wins
@@ -1425,34 +1941,46 @@ def run_product_backtest(
     )
 
     average_win = (
-        sum(wins_list)
-        / len(wins_list)
-        if wins_list
+        sum(
+            winning_trades
+        )
+        / len(
+            winning_trades
+        )
+        if winning_trades
         else 0.0
     )
 
     average_loss = (
-        sum(losses_list)
-        / len(losses_list)
-        if losses_list
+        sum(
+            losing_trades
+        )
+        / len(
+            losing_trades
+        )
+        if losing_trades
         else 0.0
     )
 
-    net_winning_pnl = sum(
-        wins_list
+    winning_pnl = sum(
+        winning_trades
     )
 
-    net_losing_pnl = abs(
-        sum(losses_list)
+    losing_pnl = abs(
+        sum(
+            losing_trades
+        )
     )
 
     profit_factor = (
-        net_winning_pnl
-        / net_losing_pnl
-        if net_losing_pnl > 0
+        winning_pnl
+        / losing_pnl
+        if losing_pnl > 0
         else (
-            float("inf")
-            if net_winning_pnl > 0
+            float(
+                "inf"
+            )
+            if winning_pnl > 0
             else 0.0
         )
     )
@@ -1465,6 +1993,7 @@ def run_product_backtest(
     )
 
     peak = 0.0
+
     max_drawdown = 0.0
 
     for value in equity_curve:
@@ -1485,36 +2014,83 @@ def run_product_backtest(
         )
 
     return {
-        "product": product_id,
-        "days": days,
-        "candles": len(raw),
-        "test_candles": len(test),
-        "trades": total_trades,
-        "wins": wins,
-        "losses": losses,
-        "win_rate": win_rate,
-        "gross_pnl": gross_equity,
-        "fees": total_fees,
-        "pnl": net_equity,
-        "average_win": average_win,
-        "average_loss": average_loss,
-        "profit_factor": profit_factor,
-        "expectancy": expectancy,
-        "max_drawdown": max_drawdown,
-        "trade_log": trades,
+        "product":
+            product_id,
+
+        "days":
+            days,
+
+        "candles":
+            len(raw),
+
+        "training_rows":
+            len(training_data),
+
+        "test_candles":
+            len(test),
+
+        "signals_checked":
+            signals_checked,
+
+        "buy_signals":
+            buy_signals,
+
+        "trades":
+            total_trades,
+
+        "wins":
+            wins,
+
+        "losses":
+            losses,
+
+        "win_rate":
+            win_rate,
+
+        "gross_pnl":
+            gross_equity,
+
+        "fees":
+            total_fees,
+
+        "pnl":
+            net_equity,
+
+        "average_win":
+            average_win,
+
+        "average_loss":
+            average_loss,
+
+        "profit_factor":
+            profit_factor,
+
+        "expectancy":
+            expectancy,
+
+        "max_drawdown":
+            max_drawdown,
+
+        "trade_log":
+            trades,
     }
 
 
 # =========================================================
-# ALL-MARKET BACKTEST
+# ALL MARKET BACKTEST
 # =========================================================
 
-def run_backtest(days=7):
+def run_backtest(
+    days=7
+):
 
     days = int(
         max(
             3,
-            min(days, 30)
+            min(
+                days,
+                30
+            )
         )
     )
 
@@ -1523,22 +2099,37 @@ def run_backtest(days=7):
     )
 
     results = []
+
     errors = []
 
     print(
         f"{STRATEGY_NAME} BACKTEST: "
-        f"discovered {len(discovered)} "
+        f"discovered "
+        f"{len(discovered)} "
         f"Coinbase USD markets."
     )
 
-    for index, product_id in enumerate(
-        discovered,
-        start=1
+    print(
+        f"Unseen test period: "
+        f"{days} days"
+    )
+
+    print(
+        f"Training lookback: "
+        f"{TRAINING_LOOKBACK_DAYS} days"
+    )
+
+    for index, product_id in (
+        enumerate(
+            discovered,
+            start=1
+        )
     ):
 
         print(
             f"{STRATEGY_NAME} BACKTEST "
-            f"{index}/{len(discovered)}: "
+            f"{index}/"
+            f"{len(discovered)}: "
             f"{product_id}"
         )
 
@@ -1551,31 +2142,38 @@ def run_backtest(days=7):
                 )
             )
 
-            results.append(result)
+            results.append(
+                result
+            )
 
             print(
                 f"{product_id}: "
                 f"{result['trades']} trades | "
                 f"{result['win_rate'] * 100:.1f}% WR | "
-                f"GBP {result['pnl']:+.2f}"
+                f"GBP "
+                f"{result['pnl']:+.2f}"
             )
 
         except Exception as exc:
 
             errors.append(
-                f"{product_id}: {exc}"
+                f"{product_id}: "
+                f"{exc}"
             )
 
             print(
                 f"BACKTEST SKIP "
-                f"{product_id}: {exc}"
+                f"{product_id}: "
+                f"{exc}"
             )
 
     if not results:
 
         raise RuntimeError(
-            "Backtest failed for all "
-            "Coinbase USD markets."
+            (
+                "Backtest failed for "
+                "all Coinbase USD markets."
+            )
         )
 
     total_trades = sum(
@@ -1618,8 +2216,11 @@ def run_backtest(days=7):
     all_trades = []
 
     for item in results:
+
         all_trades.extend(
-            item["trade_log"]
+            item[
+                "trade_log"
+            ]
         )
 
     wins_pnl = [
@@ -1635,34 +2236,46 @@ def run_backtest(days=7):
     ]
 
     average_win = (
-        sum(wins_pnl)
-        / len(wins_pnl)
+        sum(
+            wins_pnl
+        )
+        / len(
+            wins_pnl
+        )
         if wins_pnl
         else 0.0
     )
 
     average_loss = (
-        sum(losses_pnl)
-        / len(losses_pnl)
+        sum(
+            losses_pnl
+        )
+        / len(
+            losses_pnl
+        )
         if losses_pnl
         else 0.0
     )
 
-    net_winning_pnl = sum(
+    winning_pnl = sum(
         wins_pnl
     )
 
-    net_losing_pnl = abs(
-        sum(losses_pnl)
+    losing_pnl = abs(
+        sum(
+            losses_pnl
+        )
     )
 
     profit_factor = (
-        net_winning_pnl
-        / net_losing_pnl
-        if net_losing_pnl > 0
+        winning_pnl
+        / losing_pnl
+        if losing_pnl > 0
         else (
-            float("inf")
-            if net_winning_pnl > 0
+            float(
+                "inf"
+            )
+            if winning_pnl > 0
             else 0.0
         )
     )
@@ -1684,15 +2297,28 @@ def run_backtest(days=7):
     ranked = sorted(
         results,
         key=lambda item:
-            item["pnl"],
+            item[
+                "pnl"
+            ],
         reverse=True
     )
 
-    best = ranked[0]
-    worst = ranked[-1]
+    best = (
+        ranked[
+            0
+        ]
+    )
+
+    worst = (
+        ranked[
+            -1
+        ]
+    )
 
     worst_drawdown = min(
-        item["max_drawdown"]
+        item[
+            "max_drawdown"
+        ]
         for item in results
     )
 
@@ -1715,79 +2341,155 @@ def run_backtest(days=7):
     )
 
     return {
-        "strategy": STRATEGY_NAME,
-        "days": days,
+        "strategy":
+            STRATEGY_NAME,
+
+        "days":
+            days,
+
         "markets_discovered":
-            len(discovered),
-        "markets": len(results),
+            len(
+                discovered
+            ),
+
+        "markets":
+            len(
+                results
+            ),
+
         "markets_skipped":
-            len(errors),
+            len(
+                errors
+            ),
+
         "profitable_markets":
             profitable_markets,
+
         "losing_markets":
             losing_markets,
+
         "flat_markets":
             flat_markets,
-        "trades": total_trades,
+
+        "trades":
+            total_trades,
+
         "trades_per_day":
             trades_per_day,
-        "wins": total_wins,
-        "losses": total_losses,
+
+        "wins":
+            total_wins,
+
+        "losses":
+            total_losses,
+
         "win_rate":
             combined_win_rate,
+
         "gross_pnl":
             total_gross_pnl,
+
         "fees":
             total_fees,
+
         "pnl":
             total_pnl,
+
         "average_win":
             average_win,
+
         "average_loss":
             average_loss,
+
         "profit_factor":
             profit_factor,
+
         "expectancy":
             expectancy,
+
         "max_drawdown":
             worst_drawdown,
+
         "best_market":
-            best["product"],
+            best[
+                "product"
+            ],
+
         "best_market_pnl":
-            best["pnl"],
+            best[
+                "pnl"
+            ],
+
         "worst_market":
-            worst["product"],
+            worst[
+                "product"
+            ],
+
         "worst_market_pnl":
-            worst["pnl"],
+            worst[
+                "pnl"
+            ],
+
         "fee_per_side":
             ESTIMATED_FEE_PER_SIDE,
+
         "buy_threshold":
             BUY_THRESHOLD,
+
+        "target_return":
+            TARGET_RETURN,
+
+        "minimum_expected_net_return":
+            MIN_EXPECTED_NET_RETURN,
+
         "stop_loss_pct":
             STOP_LOSS_PCT,
+
         "take_profit_pct":
             TAKE_PROFIT_PCT,
+
         "target_horizon_candles":
-            TARGET_HORIZON_CANDLES,
+            TARGET_CANDLES,
+
+        "training_lookback_days":
+            TRAINING_LOOKBACK_DAYS,
+
         "top_markets":
-            ranked[:10],
+            ranked[
+                :10
+            ],
+
         "bottom_markets":
             list(
                 reversed(
-                    ranked[-10:]
+                    ranked[
+                        -10:
+                    ]
                 )
             ),
+
         "by_market":
-            ranked[:10],
+            ranked[
+                :10
+            ],
+
         "errors":
-            errors[:10],
+            errors[
+                :10
+            ],
     }
 
 
+# =========================================================
+# START
+# =========================================================
+
 if __name__ == "__main__":
 
-    result = run_backtest(
-        days=7
+    result = (
+        run_backtest(
+            days=7
+        )
     )
 
     print(
