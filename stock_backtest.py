@@ -17,11 +17,11 @@ from sklearn.isotonic import IsotonicRegression
 # STOCK AI BACKTEST V4
 # =========================================================
 
-STRATEGY_NAME = "STOCK_V7"
+STRATEGY_NAME = "STOCK_V8_180"
 INTERVAL = "1h"
 
 DEFAULT_TEST_DAYS = int(
-    os.getenv("STOCK_BACKTEST_DAYS", "40")
+    os.getenv("STOCK_BACKTEST_DAYS", "180")
 )
 
 TRAINING_LOOKBACK_DAYS = int(
@@ -29,7 +29,7 @@ TRAINING_LOOKBACK_DAYS = int(
 )
 
 MAX_TOTAL_DAYS = int(
-    os.getenv("STOCK_MAX_TOTAL_DAYS", "365")
+    os.getenv("STOCK_MAX_TOTAL_DAYS", "730")
 )
 
 RETRAIN_EVERY_BARS = int(
@@ -80,11 +80,11 @@ SLIPPAGE_PER_SIDE = float(
 )
 
 TARGET_HORIZON_BARS = int(
-    os.getenv("STOCK_TARGET_HORIZON_BARS", "8")
+    os.getenv("STOCK_TARGET_HORIZON_BARS", "16")
 )
 
 MAX_HOLD_BARS = int(
-    os.getenv("STOCK_MAX_HOLD_BARS", "10")
+    os.getenv("STOCK_MAX_HOLD_BARS", "20")
 )
 
 COOLDOWN_BARS = int(
@@ -118,6 +118,27 @@ MIN_TARGET_PCT = float(
 
 MAX_TARGET_PCT = float(
     os.getenv("STOCK_MAX_TARGET_PCT", "0.050")
+)
+
+
+# =========================================================
+# V8 ADAPTIVE HOLD / TRAILING EXIT
+# =========================================================
+
+# Once a trade gains roughly one initial-risk unit, protect it.
+TRAIL_ACTIVATION_R = float(
+    os.getenv("STOCK_TRAIL_ACTIVATION_R", "1.0")
+)
+
+# Trail approximately 0.85 initial-risk units below the best price.
+TRAIL_DISTANCE_R = float(
+    os.getenv("STOCK_TRAIL_DISTANCE_R", "0.85")
+)
+
+# After this many bars, allow a weak-trend exit rather than waiting
+# blindly for the maximum holding period.
+TREND_EXIT_AFTER_BARS = int(
+    os.getenv("STOCK_TREND_EXIT_AFTER_BARS", "8")
 )
 
 
@@ -1661,6 +1682,9 @@ class Position:
     stop_pct: float
     target_pct: float
 
+    highest_price: float
+    trailing_stop: float
+
 
 def calculate_trade_pnl(
     entry_price,
@@ -1952,15 +1976,101 @@ def run_symbol_backtest(
             exit_price = None
             reason = None
 
+            bars_held = (
+                index
+                - position.entry_index
+            )
+
+            current_open = float(
+                row["open"]
+            )
+
+            # Track the best price achieved since entry.
+            position.highest_price = max(
+                position.highest_price,
+                high
+            )
+
+            initial_risk = (
+                position.entry_price
+                * position.stop_pct
+            )
+
+            # Activate trailing protection after +1R.
+            trail_activation_price = (
+                position.entry_price
+                + initial_risk
+                * TRAIL_ACTIVATION_R
+            )
+
             if (
-                low
-                <= position.stop_loss
+                position.highest_price
+                >= trail_activation_price
+            ):
+
+                candidate_trail = (
+                    position.highest_price
+                    - initial_risk
+                    * TRAIL_DISTANCE_R
+                )
+
+                position.trailing_stop = max(
+                    position.trailing_stop,
+                    candidate_trail,
+                    position.entry_price
+                )
+
+            effective_stop = max(
+                position.stop_loss,
+                position.trailing_stop
+            )
+
+            # Gap-aware stop: if the bar opens below our stop,
+            # assume the fill occurs at the worse opening price.
+            if (
+                current_open
+                <= effective_stop
             ):
 
                 exit_price = (
-                    position.stop_loss
+                    current_open
                 )
-                reason = "STOP LOSS"
+
+                reason = (
+                    "GAP/TRAIL STOP"
+                    if position.trailing_stop
+                    > position.stop_loss
+                    else "GAP/STOP LOSS"
+                )
+
+            elif (
+                low
+                <= effective_stop
+            ):
+
+                exit_price = (
+                    effective_stop
+                )
+
+                reason = (
+                    "TRAILING STOP"
+                    if position.trailing_stop
+                    > position.stop_loss
+                    else "STOP LOSS"
+                )
+
+            # Gap above target receives the opening price rather
+            # than pretending we filled at the lower target.
+            elif (
+                current_open
+                >= position.take_profit
+            ):
+
+                exit_price = (
+                    current_open
+                )
+
+                reason = "GAP/TAKE PROFIT"
 
             elif (
                 high
@@ -1970,11 +2080,27 @@ def run_symbol_backtest(
                 exit_price = (
                     position.take_profit
                 )
+
                 reason = "TAKE PROFIT"
 
+            # Exit a stale position if the short-term structure
+            # has broken after it has had time to develop.
             elif (
-                index
-                - position.entry_index
+                bars_held
+                >= TREND_EXIT_AFTER_BARS
+                and float(
+                    row["price_vs_ema20"]
+                ) < 0.995
+                and float(
+                    row["ema_ratio_10_20"]
+                ) < 0.998
+            ):
+
+                exit_price = price
+                reason = "TREND DETERIORATION"
+
+            elif (
+                bars_held
                 >= MAX_HOLD_BARS
             ):
 
@@ -2263,6 +2389,8 @@ def run_symbol_backtest(
                 ),
                 stop_pct=stop_pct,
                 target_pct=target_pct,
+                highest_price=price,
+                trailing_stop=0.0,
             )
 
         equity_curve.append(
@@ -2627,6 +2755,82 @@ def calculate_portfolio_drawdown(
 
 
 # =========================================================
+# V8 EXTENDED-TEST HISTORY PROTECTION
+# =========================================================
+
+def resolve_valid_test_days(
+    benchmark_df,
+    requested_days
+):
+    """
+    Keep the requested test window completely unseen.
+
+    The function preserves as much training history as possible.
+    If the provider does not return enough total hourly history
+    for the requested test + training windows, it automatically
+    shortens the unseen test rather than allowing overlap.
+    """
+
+    if benchmark_df is None or benchmark_df.empty:
+        raise RuntimeError(
+            "Benchmark data is unavailable."
+        )
+
+    first_time = pd.Timestamp(
+        benchmark_df["time"].min()
+    )
+
+    last_time = pd.Timestamp(
+        benchmark_df["time"].max()
+    )
+
+    available_days = max(
+        1,
+        int(
+            (
+                last_time
+                - first_time
+            ).total_seconds()
+            / 86400
+        )
+    )
+
+    # Aim to preserve at least 60 calendar days of training data.
+    minimum_training_days = 60
+
+    maximum_valid_test_days = max(
+        10,
+        available_days
+        - minimum_training_days
+    )
+
+    resolved_days = min(
+        int(requested_days),
+        maximum_valid_test_days
+    )
+
+    return {
+        "requested_days":
+            int(requested_days),
+
+        "resolved_days":
+            int(resolved_days),
+
+        "available_days":
+            int(available_days),
+
+        "estimated_training_days":
+            int(
+                max(
+                    0,
+                    available_days
+                    - resolved_days
+                )
+            ),
+    }
+
+
+# =========================================================
 # COMPLETE BACKTEST
 # =========================================================
 
@@ -2639,20 +2843,57 @@ def run_stock_backtest(
             10,
             min(
                 days,
-                40
+                180
             )
         )
     )
 
+    requested_days = days
+
     total_days = min(
-        days
+        requested_days
         + TRAINING_LOOKBACK_DAYS,
         MAX_TOTAL_DAYS
     )
 
+    benchmark_df = download_intraday(
+        BENCHMARK_SYMBOL,
+        total_days
+    )
+
+    history_info = resolve_valid_test_days(
+        benchmark_df,
+        requested_days
+    )
+
+    days = history_info[
+        "resolved_days"
+    ]
+
     print(
         f"{STRATEGY_NAME}: "
         f"{days} unseen test days"
+    )
+
+    if (
+        days
+        < requested_days
+    ):
+        print(
+            "Requested unseen period was "
+            f"{requested_days} days, but only "
+            f"{days} days can be tested without "
+            "overlapping training history."
+        )
+
+    print(
+        f"Available hourly history: "
+        f"~{history_info['available_days']} days"
+    )
+
+    print(
+        f"Estimated pre-test training history: "
+        f"~{history_info['estimated_training_days']} days"
     )
 
     print(
@@ -2692,11 +2933,6 @@ def run_stock_backtest(
     print(
         f"Symbols configured: "
         f"{len(SYMBOLS)}"
-    )
-
-    benchmark_df = download_intraday(
-        BENCHMARK_SYMBOL,
-        total_days
     )
 
     results = []
@@ -2972,6 +3208,19 @@ def run_stock_backtest(
 
         "days":
             days,
+
+        "requested_days":
+            requested_days,
+
+        "available_history_days":
+            history_info[
+                "available_days"
+            ],
+
+        "estimated_training_days":
+            history_info[
+                "estimated_training_days"
+            ],
 
         "training_days":
             TRAINING_LOOKBACK_DAYS,
