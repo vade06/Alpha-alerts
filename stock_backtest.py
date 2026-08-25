@@ -17,7 +17,7 @@ from sklearn.isotonic import IsotonicRegression
 # STOCK AI BACKTEST V4
 # =========================================================
 
-STRATEGY_NAME = "STOCK_V4"
+STRATEGY_NAME = "STOCK_V5"
 INTERVAL = "1h"
 
 DEFAULT_TEST_DAYS = int(
@@ -33,7 +33,7 @@ MAX_TOTAL_DAYS = int(
 )
 
 RETRAIN_EVERY_BARS = int(
-    os.getenv("STOCK_RETRAIN_EVERY_BARS", "35")
+    os.getenv("STOCK_RETRAIN_EVERY_BARS", "42")
 )
 
 
@@ -132,15 +132,15 @@ BASE_TRADE_SIZE = float(
 )
 
 MAX_TRADE_SIZE = float(
-    os.getenv("STOCK_MAX_TRADE_SIZE", "200.0")
+    os.getenv("STOCK_MAX_TRADE_SIZE", "175.0")
 )
 
 EDGE_SIZE_WEIGHT = float(
-    os.getenv("STOCK_EDGE_SIZE_WEIGHT", "0.45")
+    os.getenv("STOCK_EDGE_SIZE_WEIGHT", "0.65")
 )
 
 CONFIDENCE_SIZE_WEIGHT = float(
-    os.getenv("STOCK_CONFIDENCE_SIZE_WEIGHT", "0.40")
+    os.getenv("STOCK_CONFIDENCE_SIZE_WEIGHT", "0.20")
 )
 
 VOLATILITY_SIZE_WEIGHT = float(
@@ -155,7 +155,7 @@ VOLATILITY_SIZE_WEIGHT = float(
 MIN_PREDICTED_NET_RETURN = float(
     os.getenv(
         "STOCK_MIN_PREDICTED_NET_RETURN",
-        "0.0025"
+        "0.0030"
     )
 )
 
@@ -231,6 +231,32 @@ MIN_SYMBOL_NET_SUCCESS_RATE = float(
 
 MIN_SYMBOL_AVG_NET_RETURN = float(
     os.getenv("STOCK_MIN_SYMBOL_AVG_NET_RETURN", "-0.001")
+)
+
+
+# =========================================================
+# V5 REGIME / CONFIDENCE SAFETY
+# =========================================================
+
+# Do not let an extreme model probability alone create an
+# extreme position. V4's 75%+ bucket was profitable, but its
+# win rate was not actually higher, so V5 shrinks confidence
+# toward neutral before using it for position sizing.
+CONFIDENCE_SHRINKAGE = float(
+    os.getenv("STOCK_CONFIDENCE_SHRINKAGE", "0.35")
+)
+
+# Require the broad market not to be in a clearly weak
+# short-term regime. This is deliberately mild: it blocks
+# obvious risk-off conditions without demanding a bull market.
+MIN_BENCHMARK_RETURN_8 = float(
+    os.getenv("STOCK_MIN_BENCHMARK_RETURN_8", "-0.012")
+)
+
+# Require the stock's 10/20 EMA structure to avoid being
+# materially bearish.
+MIN_EMA_RATIO_10_20 = float(
+    os.getenv("STOCK_MIN_EMA_RATIO_10_20", "0.995")
 )
 
 
@@ -695,6 +721,20 @@ def passes_entry_filter(row):
     if (
         float(row["price_vs_ema20"])
         < 0.985
+    ):
+        return False
+
+    # V5: avoid clearly weak broad-market regimes.
+    if (
+        float(row["benchmark_return_8"])
+        < MIN_BENCHMARK_RETURN_8
+    ):
+        return False
+
+    # V5: reject materially bearish 10/20 EMA structure.
+    if (
+        float(row["ema_ratio_10_20"])
+        < MIN_EMA_RATIO_10_20
     ):
         return False
 
@@ -1244,13 +1284,26 @@ def calculate_trade_size(
     atr_pct
 ):
 
+    # V5: shrink calibrated confidence toward 50% before it
+    # affects position size. This prevents a 75-90% model
+    # probability from automatically receiving the largest bet.
+    sizing_probability = (
+        0.50
+        + (
+            probability - 0.50
+        )
+        * (
+            1.0 - CONFIDENCE_SHRINKAGE
+        )
+    )
+
     confidence_span = max(
         0.85 - BUY_THRESHOLD,
         0.01
     )
 
     confidence_score = (
-        probability
+        sizing_probability
         - BUY_THRESHOLD
     ) / confidence_span
 
@@ -2345,6 +2398,16 @@ def run_stock_backtest(
         f"-{MAX_TRADE_SIZE:.0f}"
     )
 
+    print(
+        f"V5 confidence shrinkage: "
+        f"{CONFIDENCE_SHRINKAGE:.0%}"
+    )
+
+    print(
+        f"V5 predicted edge minimum: "
+        f"{MIN_PREDICTED_NET_RETURN:.2%}"
+    )
+
     benchmark_df = download_intraday(
         BENCHMARK_SYMBOL,
         total_days
@@ -2408,7 +2471,7 @@ def run_stock_backtest(
     if not results:
 
         raise RuntimeError(
-            "Stock V4 backtest failed for "
+            "Stock V5 backtest failed for "
             "every configured symbol."
         )
 
@@ -2772,6 +2835,15 @@ def run_stock_backtest(
 
         "buy_threshold":
             BUY_THRESHOLD,
+
+        "confidence_shrinkage":
+            CONFIDENCE_SHRINKAGE,
+
+        "min_benchmark_return_8":
+            MIN_BENCHMARK_RETURN_8,
+
+        "min_ema_ratio_10_20":
+            MIN_EMA_RATIO_10_20,
 
         "min_predicted_net_return":
             MIN_PREDICTED_NET_RETURN,
