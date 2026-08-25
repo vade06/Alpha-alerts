@@ -3469,7 +3469,7 @@ async def aibacktest(
     description="Start a private AI stock backtest and DM the result"
 )
 @app_commands.describe(
-    days="Number of unseen calendar days to test, from 5 to 40"
+    days="Number of unseen calendar days to test, from 5 to 180"
 )
 async def stockbacktest(
     interaction: discord.Interaction,
@@ -3490,7 +3490,7 @@ async def stockbacktest(
         5,
         min(
             int(days),
-            40
+            180
         )
     )
 
