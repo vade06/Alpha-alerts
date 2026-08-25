@@ -3416,3 +3416,4 @@ if __name__ == "__main__":
     monitor_thread.start()
 
     bot.run(DISCORD_BOT_TOKEN)
+    
