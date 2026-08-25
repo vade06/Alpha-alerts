@@ -17,7 +17,7 @@ from sklearn.isotonic import IsotonicRegression
 # STOCK AI BACKTEST V4
 # =========================================================
 
-STRATEGY_NAME = "STOCK_V5"
+STRATEGY_NAME = "STOCK_V6"
 INTERVAL = "1h"
 
 DEFAULT_TEST_DAYS = int(
@@ -261,6 +261,20 @@ MIN_EMA_RATIO_10_20 = float(
 
 
 # =========================================================
+# V6: INTRADAY TREND-PULLBACK + RELATIVE STRENGTH
+# =========================================================
+
+V6_MIN_PRICE_VS_EMA20 = float(os.getenv("V6_MIN_PRICE_VS_EMA20", "0.995"))
+V6_MAX_PRICE_VS_EMA20 = float(os.getenv("V6_MAX_PRICE_VS_EMA20", "1.025"))
+V6_MIN_EMA10_VS_EMA20 = float(os.getenv("V6_MIN_EMA10_VS_EMA20", "0.998"))
+V6_MAX_DISTANCE_FROM_EMA10 = float(os.getenv("V6_MAX_DISTANCE_FROM_EMA10", "0.015"))
+V6_MIN_RELATIVE_STRENGTH_8 = float(os.getenv("V6_MIN_RELATIVE_STRENGTH_8", "-0.003"))
+V6_MIN_BODY_PCT = float(os.getenv("V6_MIN_BODY_PCT", "0.0005"))
+V6_MIN_CLOSE_POSITION = float(os.getenv("V6_MIN_CLOSE_POSITION", "0.55"))
+V6_MIN_VOLUME_RATIO = float(os.getenv("V6_MIN_VOLUME_RATIO", "0.80"))
+
+
+# =========================================================
 # FEATURES
 # =========================================================
 
@@ -286,6 +300,7 @@ FEATURE_COLUMNS = [
     "close_position",
     "benchmark_return_4",
     "benchmark_return_8",
+    "relative_strength_8",
     "relative_return_4",
     "relative_return_8",
     "market_above_ema20",
@@ -662,6 +677,15 @@ def build_feature_frame(
         .rolling(20)
         .mean()
     )
+
+    # V6 relative strength versus SPY.
+    if "benchmark_return_8" in data.columns:
+        if "return_8" in data.columns:
+            data["relative_strength_8"] = data["return_8"] - data["benchmark_return_8"]
+        elif "return_6" in data.columns:
+            data["relative_strength_8"] = data["return_6"] - data["benchmark_return_8"]
+        else:
+            data["relative_strength_8"] = -data["benchmark_return_8"]
 
     data.replace(
         [np.inf, -np.inf],
@@ -1392,6 +1416,38 @@ def calculate_trade_size(
 
 
 # =========================================================
+# V6 QUALIFIED SETUP
+# =========================================================
+
+def passes_v6_setup(row):
+    price_vs_ema20 = float(row["price_vs_ema20"])
+    ema_ratio = float(row["ema_ratio_10_20"])
+    price = float(row["close"])
+    ema10 = float(row["ema_10"])
+    relative_strength = float(row.get("relative_strength_8", 0.0))
+    body_pct = float(row["body_pct"])
+    close_position = float(row["close_position"])
+    volume_ratio = float(row["volume_ratio"])
+
+    if not (V6_MIN_PRICE_VS_EMA20 <= price_vs_ema20 <= V6_MAX_PRICE_VS_EMA20):
+        return False
+    if ema_ratio < V6_MIN_EMA10_VS_EMA20:
+        return False
+    if abs(price / ema10 - 1.0) > V6_MAX_DISTANCE_FROM_EMA10:
+        return False
+    if relative_strength < V6_MIN_RELATIVE_STRENGTH_8:
+        return False
+    if body_pct < V6_MIN_BODY_PCT:
+        return False
+    if close_position < V6_MIN_CLOSE_POSITION:
+        return False
+    if volume_ratio < V6_MIN_VOLUME_RATIO:
+        return False
+
+    return True
+
+
+# =========================================================
 # POSITION + PNL
 # =========================================================
 
@@ -1885,6 +1941,11 @@ def run_symbol_backtest(
                 )
                 continue
 
+
+            # V6: ML only sees qualified trend-pullback setups.
+            if not passes_v6_setup(row):
+                equity_curve.append(net_equity)
+                continue
             signals_checked += 1
 
             (
