@@ -17,7 +17,7 @@ from sklearn.isotonic import IsotonicRegression
 # STOCK AI BACKTEST V4
 # =========================================================
 
-STRATEGY_NAME = "STOCK_V6"
+STRATEGY_NAME = "STOCK_V7"
 INTERVAL = "1h"
 
 DEFAULT_TEST_DAYS = int(
@@ -49,6 +49,8 @@ SYMBOLS = [
             "AAPL,MSFT,NVDA,AMZN,META,GOOGL,TSLA,"
             "AMD,AVGO,NFLX,PLTR,COIN,MSTR,"
             "JPM,BAC,GS,XOM,CVX,LLY,UNH,WMT,COST,"
+            "CRM,ORCL,UBER,MU,ARM,TSM,PANW,CRWD,NOW,"
+            "CAT,BA,DIS,GE,SHOP,NKE,"
             "SPY,QQQ,IWM"
         )
     ).split(",")
@@ -136,11 +138,11 @@ MAX_TRADE_SIZE = float(
 )
 
 EDGE_SIZE_WEIGHT = float(
-    os.getenv("STOCK_EDGE_SIZE_WEIGHT", "0.65")
+    os.getenv("STOCK_EDGE_SIZE_WEIGHT", "0.50")
 )
 
 CONFIDENCE_SIZE_WEIGHT = float(
-    os.getenv("STOCK_CONFIDENCE_SIZE_WEIGHT", "0.20")
+    os.getenv("STOCK_CONFIDENCE_SIZE_WEIGHT", "0.10")
 )
 
 VOLATILITY_SIZE_WEIGHT = float(
@@ -261,7 +263,7 @@ MIN_EMA_RATIO_10_20 = float(
 
 
 # =========================================================
-# V6: INTRADAY TREND-PULLBACK + RELATIVE STRENGTH
+# V7: PROFIT-FOCUSED TREND-PULLBACK + RELATIVE STRENGTH
 # =========================================================
 
 V6_MIN_PRICE_VS_EMA20 = float(os.getenv("V6_MIN_PRICE_VS_EMA20", "0.995"))
@@ -272,6 +274,43 @@ V6_MIN_RELATIVE_STRENGTH_8 = float(os.getenv("V6_MIN_RELATIVE_STRENGTH_8", "-0.0
 V6_MIN_BODY_PCT = float(os.getenv("V6_MIN_BODY_PCT", "0.0005"))
 V6_MIN_CLOSE_POSITION = float(os.getenv("V6_MIN_CLOSE_POSITION", "0.55"))
 V6_MIN_VOLUME_RATIO = float(os.getenv("V6_MIN_VOLUME_RATIO", "0.80"))
+
+
+# =========================================================
+# V7 PROFIT-FOCUSED SETUP SCORING
+# =========================================================
+
+# Instead of demanding every trend/pullback rule be perfect,
+# V7 scores the setup. This increases opportunity count while
+# still requiring multiple pieces of evidence to agree.
+
+V7_MIN_SETUP_SCORE = float(
+    os.getenv("V7_MIN_SETUP_SCORE", "0.67")
+)
+
+V7_SETUP_SIZE_WEIGHT = float(
+    os.getenv("V7_SETUP_SIZE_WEIGHT", "0.25")
+)
+
+# Slightly wider acceptable pullback zone than V6.
+V7_MAX_PRICE_VS_EMA20 = float(
+    os.getenv("V7_MAX_PRICE_VS_EMA20", "1.035")
+)
+
+V7_MAX_DISTANCE_FROM_EMA10 = float(
+    os.getenv("V7_MAX_DISTANCE_FROM_EMA10", "0.020")
+)
+
+# Relative strength can be mildly negative if the rest of the
+# setup is strong; strong relative strength earns a higher score.
+V7_MIN_RELATIVE_STRENGTH_8 = float(
+    os.getenv("V7_MIN_RELATIVE_STRENGTH_8", "-0.005")
+)
+
+# Keep a mild market-regime guard rather than forcing a bull market.
+V7_MIN_BENCHMARK_RETURN_8 = float(
+    os.getenv("V7_MIN_BENCHMARK_RETURN_8", "-0.015")
+)
 
 
 # =========================================================
@@ -1305,7 +1344,8 @@ def predict_net_return(
 def calculate_trade_size(
     probability,
     predicted_net_return,
-    atr_pct
+    atr_pct,
+    setup_score=1.0
 ):
 
     # V5: shrink calibrated confidence toward 50% before it
@@ -1375,6 +1415,14 @@ def calculate_trade_size(
         )
     )
 
+    setup_component = float(
+        np.clip(
+            setup_score,
+            0.0,
+            1.0
+        )
+    )
+
     combined_score = (
         confidence_score
         * CONFIDENCE_SIZE_WEIGHT
@@ -1384,7 +1432,26 @@ def calculate_trade_size(
         +
         volatility_score
         * VOLATILITY_SIZE_WEIGHT
+        +
+        setup_component
+        * V7_SETUP_SIZE_WEIGHT
     )
+
+    total_weight = (
+        CONFIDENCE_SIZE_WEIGHT
+        +
+        EDGE_SIZE_WEIGHT
+        +
+        VOLATILITY_SIZE_WEIGHT
+        +
+        V7_SETUP_SIZE_WEIGHT
+    )
+
+    if total_weight > 0:
+        combined_score = (
+            combined_score
+            / total_weight
+        )
 
     size = (
         MIN_TRADE_SIZE
@@ -1419,32 +1486,155 @@ def calculate_trade_size(
 # V6 QUALIFIED SETUP
 # =========================================================
 
-def passes_v6_setup(row):
-    price_vs_ema20 = float(row["price_vs_ema20"])
-    ema_ratio = float(row["ema_ratio_10_20"])
-    price = float(row["close"])
-    ema10 = float(row["ema_10"])
-    relative_strength = float(row.get("relative_strength_8", 0.0))
-    body_pct = float(row["body_pct"])
-    close_position = float(row["close_position"])
-    volume_ratio = float(row["volume_ratio"])
+def v7_setup_score(row):
+    """
+    Score the intraday trend-pullback setup from 0.0 to 1.0.
 
-    if not (V6_MIN_PRICE_VS_EMA20 <= price_vs_ema20 <= V6_MAX_PRICE_VS_EMA20):
-        return False
-    if ema_ratio < V6_MIN_EMA10_VS_EMA20:
-        return False
-    if abs(price / ema10 - 1.0) > V6_MAX_DISTANCE_FROM_EMA10:
-        return False
-    if relative_strength < V6_MIN_RELATIVE_STRENGTH_8:
-        return False
-    if body_pct < V6_MIN_BODY_PCT:
-        return False
-    if close_position < V6_MIN_CLOSE_POSITION:
-        return False
-    if volume_ratio < V6_MIN_VOLUME_RATIO:
-        return False
+    The ML model still decides whether to trade. This function
+    only makes sure the candle is a sensible candidate.
+    """
 
-    return True
+    price_vs_ema20 = float(
+        row["price_vs_ema20"]
+    )
+
+    ema_ratio = float(
+        row["ema_ratio_10_20"]
+    )
+
+    price = float(
+        row["close"]
+    )
+
+    ema10 = float(
+        row["ema_10"]
+    )
+
+    relative_strength = float(
+        row.get(
+            "relative_strength_8",
+            0.0
+        )
+    )
+
+    benchmark_return_8 = float(
+        row.get(
+            "benchmark_return_8",
+            0.0
+        )
+    )
+
+    body_pct = float(
+        row["body_pct"]
+    )
+
+    close_position = float(
+        row["close_position"]
+    )
+
+    volume_ratio = float(
+        row["volume_ratio"]
+    )
+
+    points = 0.0
+    possible = 0.0
+
+    # 1. Trend structure.
+    possible += 1.0
+
+    if (
+        price_vs_ema20
+        >= V6_MIN_PRICE_VS_EMA20
+        and
+        ema_ratio
+        >= V6_MIN_EMA10_VS_EMA20
+    ):
+        points += 1.0
+
+    # 2. Not excessively extended.
+    possible += 1.0
+
+    if (
+        price_vs_ema20
+        <= V7_MAX_PRICE_VS_EMA20
+    ):
+        points += 1.0
+
+    # 3. Pullback is still close enough to EMA10.
+    possible += 1.0
+
+    distance_from_ema10 = abs(
+        price / ema10 - 1.0
+    )
+
+    if (
+        distance_from_ema10
+        <= V7_MAX_DISTANCE_FROM_EMA10
+    ):
+        points += 1.0
+
+    # 4. Relative strength versus SPY.
+    possible += 1.0
+
+    if (
+        relative_strength
+        >= V7_MIN_RELATIVE_STRENGTH_8
+    ):
+        points += 0.5
+
+        if relative_strength >= 0.0:
+            points += 0.5
+
+    # 5. Confirmation candle quality.
+    possible += 1.0
+
+    candle_quality = 0.0
+
+    if body_pct > 0:
+        candle_quality += 0.5
+
+    if close_position >= 0.55:
+        candle_quality += 0.5
+
+    points += candle_quality
+
+    # 6. Participation / volume.
+    possible += 1.0
+
+    if volume_ratio >= 0.70:
+        points += 0.5
+
+    if volume_ratio >= 1.00:
+        points += 0.5
+
+    # Hard safety checks.
+    if (
+        benchmark_return_8
+        < V7_MIN_BENCHMARK_RETURN_8
+    ):
+        return 0.0
+
+    if (
+        price_vs_ema20
+        < 0.985
+    ):
+        return 0.0
+
+    return float(
+        np.clip(
+            points / possible,
+            0.0,
+            1.0
+        )
+    )
+
+
+def passes_v7_setup(row):
+
+    return (
+        v7_setup_score(row)
+        >= V7_MIN_SETUP_SCORE
+    )
 
 
 # =========================================================
@@ -1610,6 +1800,9 @@ def run_symbol_backtest(
     classifier_passes = 0
     edge_passes = 0
     retrain_count = 0
+
+    setup_score_total = 0.0
+    setup_score_count = 0
 
     classifier = None
     calibrator = None
@@ -1942,10 +2135,23 @@ def run_symbol_backtest(
                 continue
 
 
-            # V6: ML only sees qualified trend-pullback setups.
-            if not passes_v6_setup(row):
+            # V7: ML only sees sufficiently strong scored setups.
+            if not passes_v7_setup(row):
                 equity_curve.append(net_equity)
                 continue
+
+            current_setup_score = (
+                v7_setup_score(
+                    row
+                )
+            )
+
+            setup_score_total += (
+                current_setup_score
+            )
+
+            setup_score_count += 1
+
             signals_checked += 1
 
             (
@@ -2010,7 +2216,8 @@ def run_symbol_backtest(
                 calculate_trade_size(
                     calibrated_probability,
                     predicted_net,
-                    atr_pct
+                    atr_pct,
+                    current_setup_score
                 )
             )
 
@@ -2273,6 +2480,14 @@ def run_symbol_backtest(
         "edge_passes":
             edge_passes,
 
+        "average_setup_score":
+            (
+                setup_score_total
+                / setup_score_count
+                if setup_score_count
+                else 0.0
+            ),
+
         "trades":
             total_trades,
 
@@ -2467,6 +2682,16 @@ def run_stock_backtest(
     print(
         f"V5 predicted edge minimum: "
         f"{MIN_PREDICTED_NET_RETURN:.2%}"
+    )
+
+    print(
+        f"V7 setup-score minimum: "
+        f"{V7_MIN_SETUP_SCORE:.0%}"
+    )
+
+    print(
+        f"Symbols configured: "
+        f"{len(SYMBOLS)}"
     )
 
     benchmark_df = download_intraday(
@@ -2792,6 +3017,30 @@ def run_stock_backtest(
                 for item in results
             ),
 
+        "average_setup_score":
+            (
+                float(
+                    np.mean(
+                        [
+                            item[
+                                "average_setup_score"
+                            ]
+                            for item in results
+                            if item[
+                                "average_setup_score"
+                            ] > 0
+                        ]
+                    )
+                )
+                if any(
+                    item[
+                        "average_setup_score"
+                    ] > 0
+                    for item in results
+                )
+                else 0.0
+            ),
+
         "trades":
             total_trades,
 
@@ -2899,6 +3148,15 @@ def run_stock_backtest(
 
         "confidence_shrinkage":
             CONFIDENCE_SHRINKAGE,
+
+        "v7_strategy":
+            "trend_pullback_relative_strength_setup_score",
+
+        "v7_min_setup_score":
+            V7_MIN_SETUP_SCORE,
+
+        "v7_setup_size_weight":
+            V7_SETUP_SIZE_WEIGHT,
 
         "min_benchmark_return_8":
             MIN_BENCHMARK_RETURN_8,
